@@ -15,8 +15,8 @@ n_productos = [ 2 for _ in range(n_instancias) ]  # int(np.random.uniform(1,4))
 def generar_instancias(semillas):
     for n in semillas:
         generar_instancia_irp(
-            ancho_zona = 40, # 20 km radio de la zona
-            largo_zona = 40, # 20 km radio de la zona
+            ancho_zona = 2000, # 20 km radio de la zona
+            largo_zona = 2000, # 20 km radio de la zona
             horizonte_tiempo = 200, # 480 acorde al paper del profesor
             num_productos = n_productos[n], 
             num_clientes = n_clientes[n], #4

@@ -145,7 +145,6 @@ class Instancia:
             for id2, cliente2 in self.clientes.items():
                 self.distancias_entre_nodos[id][id2]  = distancia_euclidiana(np.array([cliente.posicion_x, cliente.posicion_y]), np.array([cliente2.posicion_x, cliente2.posicion_y]) )
 
-
     def _cargar_desde_xml(self) -> None:
         """
         Carga la información de la instancia desde el archivo XML.
@@ -296,5 +295,3 @@ class Instancia:
                     vehiculo.inventario[idp] = int(numerador / denominador)
                 else: 
                     vehiculo.inventario[idp] = int( (vehiculo.inventario[1] / self.demandas_medias[1]) * self.demandas_medias[idp])
-                
-

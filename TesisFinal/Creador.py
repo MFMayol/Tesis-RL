@@ -12,6 +12,7 @@ def generar_instancia_irp(
         num_clientes: int,
         num_vehiculos: int,
         semilla: int,
+        carpeta_instancias: str,
         nombre_archivo = "instancia_irp.xml"
     ):
     """
@@ -26,8 +27,8 @@ def generar_instancia_irp(
     - num_vehiculos: Número de vehículos disponibles
     - nombre_archivo: Nombre del archivo XML a generar
     """
-
     random.seed(semilla) #fijamos la semilla
+    np.random.seed(semilla) #fijamos la semilla
     
     # Crear el elemento raíz del XML
     root = ET.Element("InstanciaIRP")
@@ -59,7 +60,7 @@ def generar_instancia_irp(
         ET.SubElement(cliente, "PosicionY").text = str(random.randint(0, largo_zona))
         
         # Capacidad total de almacenamiento (en peso)
-        ET.SubElement(cliente, "CapacidadAlmacenamiento").text = str(int( random.uniform(100,150)))    #str(int(random.randint(100, 100)))
+        ET.SubElement(cliente, "CapacidadAlmacenamiento").text = str(int( random.uniform(50,150) *num_productos))    #str(int(random.randint(100, 100)))
         
         # Información por producto
         inventarios = ET.SubElement(cliente, "Inventarios")
@@ -70,18 +71,17 @@ def generar_instancia_irp(
 
             # Inventario inicial
             inv = ET.SubElement(inventarios, f"Producto{j+1}")
-            inv.text = str(0) # str(int(random.randint(50, 50))) # genera un valor entre 5 y 20
+            inv.text = str(10) # str(int(random.randint(50, 50))) # 
             
             # Costos
             costo_prod = ET.SubElement(costos, f"Producto{j+1}")
-            ET.SubElement(costo_prod, "CostoInventario").text = '0'    # str(round(random.uniform(0.5, 2.0), 2))
-            ET.SubElement(costo_prod, "CostoPenalizacion").text = str(round(random.uniform(1, 2))) # '1 a 5' antes
+            ET.SubElement(costo_prod, "CostoInventario").text = '0'  
+            ET.SubElement(costo_prod, "CostoPenalizacion").text = str(round(random.uniform(1, 110))) #
             
             # Demandas por período
             demanda_prod = ET.SubElement(demandas, f"Producto{j+1}")
-            ET.SubElement(demanda_prod, "Media").text = str(round(np.random.uniform(1,6) )) #
-            ET.SubElement(demanda_prod, "DesvEst").text = str(round(random.uniform(1, 3), 2))   # antes estaba entre 0.3 y 0.5
-    
+            ET.SubElement(demanda_prod, "Media").text = str(round(np.random.uniform(1,3) )) #
+            ET.SubElement(demanda_prod, "DesvEst").text = str(round(random.uniform(1,3), 2))   # antes estaba entre 0.3 y 0.5
 
     # Generar información de vehículos
     vehiculos = ET.SubElement(root, "Vehiculos")
@@ -90,19 +90,16 @@ def generar_instancia_irp(
         vehiculo.set("id", str(i+1))
         
         # Capacidad del vehículo (en peso)
-        ET.SubElement(vehiculo, "Capacidad").text = "500" #antes era 400     # lo fijé en 100 y da mejor la simple, con 1000 da mejor la clusterisada str(random.randint(100, 300))
+        ET.SubElement(vehiculo, "Capacidad").text = str(300*num_productos)  #antes era 400 
         
-        # en el problema del paper del profesor se tine e un área de 2000 de extensión por dimensión
         # Velocidad del vehículo
-        ET.SubElement(vehiculo, "VelocidadMedia").text = "3" # str(round(random.uniform(40.0, 60.0), 2)) puse 1.5 antes
-        ET.SubElement(vehiculo, "DesvEstVelocidad").text = '0.4' #"0.1" # str(round(random.uniform(5.0, 10.0), 2)) puse 1 antes
+        ET.SubElement(vehiculo, "VelocidadMedia").text = "50" #  puse 3 antes
+        ET.SubElement(vehiculo, "DesvEstVelocidad").text = '5' #"0.1" # str(round(random.uniform(5.0, 10.0), 2)) puse 1 antes
     
     # Convertir el XML a string con formato agradable
     xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="    ")
     
-
-        # Crear la carpeta INSTANCIAS si no existe
-    carpeta_instancias = "INSTANCIAS MC" # quizá es mejor agregar un parámetro
+    # Crear la carpeta INSTANCIAS si no existe
     os.makedirs(carpeta_instancias, exist_ok=True)
     
     # Construir la ruta completa para guardar el archivo

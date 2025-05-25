@@ -3,6 +3,7 @@ import numpy as np
 from FuncionesAuxiliares import distancia_euclidiana, kmeans_clustering_sklearn
 from abc import ABC, abstractmethod
 import copy
+#import tensorflow as tf
 
 class Politica:
     '''
@@ -69,23 +70,17 @@ class Politica:
         Retorna:
         - dict: Un diccionario con la planificación de entrega de cada producto basada en la disponibilidad y la proporción de demanda.
         """
-        planificacion = {}
-        
-        # Calcular la demanda total esperada y el total de inventario disponible
         total_demanda = sum(demandas.values())
         total_inventario = sum(inventario.values())
         
-        # Si no hay demanda o inventario, se retorna una planificación con entrega 0 para todos los productos
-        if total_demanda == 0 or total_inventario == 0:
-            return {producto: 0 for producto in demandas}
+        if not total_demanda or not total_inventario:
+            return dict.fromkeys(demandas, 0)
         
-        # Distribuir el inventario proporcionalmente según la demanda de cada producto
-        for producto, demanda in demandas.items():
-            ponderador = demanda / total_demanda  # Proporción de la demanda respecto a la demanda total
-            entrega = round(ponderador * total_inventario)  # Cantidad a entregar basada en la proporción
-            disponible = inventario.get(producto, 0)  # Obtener la cantidad disponible en inventario
-            planificacion[producto] = min(entrega, disponible)  # No entregar más de lo disponible        
-        return planificacion
+        ratio = total_inventario / total_demanda
+        return {
+            producto: min(round(demanda * ratio), inventario.get(producto, 0))
+            for producto, demanda in demandas.items()
+        }
 
 class PoliticasSimples(Politica):
     '''
@@ -95,42 +90,69 @@ class PoliticasSimples(Politica):
         self.instancia = instancia
         self.proceso = proceso
 
-    def determinar_vehiculos_con_quiebre(self, estado: Estado):
+
+    def determinar_vehiculos_con_quiebre(self, estado: Estado) -> list:
         '''
-        Método que determina los vehiculos que tienen un porcentaje de inventario menor a un umbral del 20%
+        Método que determina los vehiculos que tienen un porcentaje de inventario menor a un umbral del 20% optimizado
         Parámetros:
             - estado: Estado actual del problema
         Retorna:
             Lista con los id de vehiculos con quiebre (list)
         '''
+        # Precomputar datos necesarios fuera del bucle (optimización clave)
+        productos = self.instancia.productos  # Diccionario de productos
+        umbral = self.instancia.umbral_inventario_vehiculos  # Valor numérico (ej: 0.2)
+        vehiculos_data = {
+            idv: {
+                'capacidad': v.capacidad,
+                'inventario': estado.inventarios_vehiculos[idv]
+            } for idv, v in self.instancia.vehiculos.items()
+        }
+
+        # List comprehension vectorizada + operaciones nativas
+        return [
+            idv for idv, data in vehiculos_data.items()
+            if sum(
+                cantidad * productos[idp].peso 
+                for idp, cantidad in data['inventario'].items()
+            ) < (umbral * data['capacidad'])
+        ]
+
+    def determinar_cliente_critico(self, estado: Estado, clientes_disponibles: list) -> int:
+        '''
+        Determina el cliente crítico usando vectorización con NumPy para mejorar rendimiento.
         
-        vehiculos_quiebres = []
-
-        for idv in self.instancia.vehiculos.keys():
-            inventario_utilizado = sum(cantidad * self.instancia.productos[idp].peso for idp, cantidad in estado.inventarios_vehiculos[idv].items())
-            # Si su ratio es menor que el 0.2, se agrega a la lista de vehiculos quiebres
-            if inventario_utilizado/ self.instancia.vehiculos[idv].capacidad < self.instancia.umbral_inventario_vehiculos:
-                vehiculos_quiebres.append(idv)
-        return vehiculos_quiebres
-    
-    def determinar_cliente_critico(self, estado: Estado, clientes_disponibles):
+        Args:
+            - estado: Estado actual del problema.
+            - clientes_disponibles: Lista de clientes a evaluar.
+            
+        Return:
+            ID del cliente con el menor ratio inventario/demanda entre aquellos con al menos un producto no negativo.
         '''
-        Método que determina el cliente crítico
-
-        Parámetros:
-            - estado: Estado actual del problema
-            - clientes_disponibles: Lista de clientes disponibles
-
-        return:
-            id del cliente con inventario más bajo (int)
-        '''
-
-        id_cliente_con_inventario_bajo = min(
-                (idc for idc in clientes_disponibles if any(estado.inventarios_clientes[idc][idp] >= 0 for idp in self.instancia.productos.keys())),
-                key=lambda idc: min(estado.inventarios_clientes[idc][idp] / self.instancia.demandas_medias[idp] for idp in self.instancia.productos.keys()),
-                default=None
-            )
-        return id_cliente_con_inventario_bajo
+        # Precomputar datos clave como arrays NumPy
+        productos = list(self.instancia.productos.keys())
+        demandas = np.array([self.instancia.demandas_medias[idp] for idp in productos], dtype=np.float32)
+        
+        min_cliente = None
+        min_ratio = np.inf
+        
+        for idc in clientes_disponibles:
+            # Obtener inventario del cliente como array NumPy
+            inventario = np.array([estado.inventarios_clientes[idc][idp] for idp in productos], dtype=np.float32)
+            
+            # Verificar si hay al menos un producto con inventario >= 0
+            if not np.any(inventario >= 0):
+                continue
+            
+            # Calcular ratios y obtener el mínimo
+            ratios = np.divide(inventario, demandas, where=demandas != 0)  # Evita división por cero
+            ratio_min = np.nanmin(ratios)  # Ignora NaNs (productos con demanda 0)
+            
+            if ratio_min < min_ratio:
+                min_ratio = ratio_min
+                min_cliente = idc
+        
+        return min_cliente
 
     def determinar_vehiculos_disponibles(self, estado: Estado):
         '''
@@ -141,32 +163,146 @@ class PoliticasSimples(Politica):
 
         Return: lista con ids de vehiculos disponibles
         '''
-
         # Determinamos los vehiculos que no tienen nada asignado
-        vehiculos_disponibles = []
-        for idv in self.instancia.id_vehiculos:
-            if estado.planificacion[idv] == {}:
-                vehiculos_disponibles.append(idv)
-        return vehiculos_disponibles
-    
+        planificacion = estado.planificacion  # Guardar referencia
+        return [idv for idv in self.instancia.id_vehiculos if not planificacion[idv]]
+
     def determinar_clientes_disponibles(self, estado: Estado):
         '''
-        Método que devuelve los clientes que no están asignados a ningún vehiculo
+        Método que devuelve los clientes que no están asignados a ningún vehículo OPTIMIZADA
+
+        Args:
+            * estado: Estado actual del problema
 
         Return: lista con ids de clientes disponibles
         '''
-        clientes_disponibles = []
-        for idc in self.instancia.clientes.keys():
-            idc_asignado = False # Se parte como que no está asignado y cambiará según si está asignado a algún vehiculo
-            for idv in self.instancia.vehiculos.keys():
-                # Si está en la planificación del vehiculo, se marca como asignado
-                if idc in estado.planificacion[idv].keys(): # Si está en la planificación del vehiculo (key de ese diccionario), se marca como asignado
-                    idc_asignado = True
-            # Si no se asignó a ningún vehiculo, se agrega a la lista de clientes disponibles
-            if not idc_asignado:
-                clientes_disponibles.append(idc)
-        
+        # Obtener todos los clientes asignados en la planificación
+        clientes_asignados = set()
+        for planificacion in estado.planificacion.values():
+            clientes_asignados.update(planificacion.keys())
+
+        # Clientes disponibles son los que no están asignados
+        todos_los_clientes = set(self.instancia.clientes.keys())
+        clientes_disponibles = list(todos_los_clientes - clientes_asignados)
+
         return clientes_disponibles
+    
+    def obtener_4_clientes_criticos(self, estado, clientes_disponibles):
+        '''
+        Descripción:
+            Método que determina los 4 clientes con stock crítico considerando el peso de los productos OPTIMIZADA.
+        Args:
+            estado: Estado actual (Estado)
+            clientes_disponibles (List): lista de ids de clientes disponibles
+        Return:
+            Lista con los ids de los 4 clientes más críticos
+        '''
+        
+        # Lista para almacenar clientes con su criticidad
+        clientes_criticidad = []
+
+        for idc, inventario in estado.inventarios_clientes.items():
+            if idc in clientes_disponibles:
+                inventario_total_peso = sum(cantidad * self.instancia.productos[idp].peso 
+                                            for idp, cantidad in inventario.items())
+                clientes_criticidad.append((idc, inventario_total_peso/self.instancia.clientes[idc].capacidad_almacenamiento))
+
+        # Ordenar por inventario más bajo (mayor criticidad)
+        clientes_criticidad.sort(key=lambda x: x[1])
+
+        # Seleccionar los 4 clientes más críticos
+        return [idc for idc, _ in clientes_criticidad[:4]]
+
+    def obtener_acciones(self, estado: Estado):
+        '''
+        Descripción:
+        Método que devuelve una lista con las acciones posibles para un estado
+        Genera todas las acciones posibles para el estado actual, optimizando:
+        1. Reducción de llamadas redundantes a métodos.
+        2. Uso de estructuras de datos eficientes (sets, generadores).
+        3. Minimización de operaciones costosas.
+        
+        Args: 
+            * estado: Objeto Estado
+        Return:
+            * acciones_posibles: Lista con las acciones factibles
+
+        '''
+        acciones_posibles = [{}]  # Acción nula
+
+        # --- Sección 1: Acción de redirigir vehículos con quiebre de stock al depot ---
+        vehiculos_disponibles = self.determinar_vehiculos_disponibles(estado)
+        vehiculos_con_quiebre = set(self.determinar_vehiculos_con_quiebre(estado))  # Convertir a set para O(1) lookups
+        
+        # Encontrar el primer vehículo disponible con quiebre usando next() + generador (más eficiente que loop)
+        vehiculo_quiebre = next((idv for idv in vehiculos_disponibles if idv in vehiculos_con_quiebre), None)
+        
+        if vehiculo_quiebre is not None:
+            acciones_posibles.append({vehiculo_quiebre: {0: {}}})  # Acción de redirección
+
+        # --- Sección 2: Acciones para clientes críticos ---
+        clientes_disponibles = self.determinar_clientes_disponibles(estado)
+        criticos = self.obtener_4_clientes_criticos(estado, clientes_disponibles)
+        
+        # Precomputar demandas de clientes para evitar accesos múltiples
+        demandas_clientes = {idc: self.instancia.clientes[idc].demanda_media for idc in criticos}
+        
+        # Generar todas las acciones en una comprensión de lista (evita loops anidados)
+        nuevas_acciones = [
+            {idv: {id_cliente: self.planificar_entrega(
+                estado.inventarios_vehiculos[idv], 
+                demandas_clientes[id_cliente]
+            )}}
+            for id_cliente in criticos
+            for idv in self.determinar_2_vehiculos_mas_cercanos_disponibles(
+                estado, id_cliente, vehiculos_disponibles
+            )
+        ]
+        
+        acciones_posibles.extend(nuevas_acciones)
+        return acciones_posibles
+
+    def determinar_2_vehiculos_mas_cercanos_disponibles(self, estado, id_cliente, vehiculos_disponibles):
+        '''
+        Descripción:
+            Método que determina los 2 vehículos más cercanos a un cliente.
+
+        Args:
+            * estado: Objeto estado
+            * id_cliente: int
+            * vehiculos_disponibles:  List
+
+        Return:
+            * vehiculos_mas_cercanos: Lista con los ids de los 2 vehículos más cercanos
+        '''
+
+        # Se obtiene la posición del cliente
+        posicion_cliente = np.array([
+            self.instancia.clientes[id_cliente].posicion_x,
+            self.instancia.clientes[id_cliente].posicion_y
+        ])
+
+        # Lista para almacenar (id_vehiculo, distancia)
+        distancias_vehiculos = []
+
+        # Calcular la distancia de cada vehículo al cliente
+        for idv in vehiculos_disponibles:
+            coordenada_vehiculo = np.array([
+                estado.posiciones_vehiculos[idv]['x'],
+                estado.posiciones_vehiculos[idv]['y']
+            ])
+
+            # Calcular distancia euclidiana
+            distancia = np.linalg.norm(posicion_cliente - coordenada_vehiculo)
+
+            # Guardar la distancia junto con el ID del vehículo
+            distancias_vehiculos.append((idv, distancia))
+
+        # Ordenar vehículos por distancia (de menor a mayor)
+        distancias_vehiculos.sort(key=lambda x: x[1])
+
+        # Devolver los 2 vehículos más cercanos
+        return [idv for idv, _ in distancias_vehiculos[:2]]
 
 class PoliticaSimpleClusterisada(PoliticasSimples):
     '''
@@ -231,7 +367,6 @@ class PoliticaSimpleClusterisada(PoliticasSimples):
                 return accion
         return accion
 
-
 class PoliticaSimple(PoliticasSimples):
     '''
     Clase que implementa la politica de decisiones y ejecuta la simulación del Proceso sin clusters
@@ -266,15 +401,13 @@ class PoliticaSimple(PoliticasSimples):
         for idv in vehiculos_disponibles:
                 # Si no tiene quiebre, se asigna su ruta al cliente crítico
                 id_cliente_con_inventario_bajo = self.determinar_cliente_critico(estado, clientes_disponibles)
-                if id_cliente_con_inventario_bajo == None: # Si no quedan clientes, no se modifica la ruta y se queda 'quieto'
-                    break
+                #if id_cliente_con_inventario_bajo == None: # Si no quedan clientes, no se modifica la ruta y se queda 'quieto'
+                #    break
                 planificacion_del_vehiculo = self.planificar_entrega(inventario = estado.inventarios_vehiculos[idv], demandas= self.instancia.clientes[id_cliente_con_inventario_bajo].demanda_media)
                 # Se determina su planificación a ese cliente como entregar todo lo que tiene (PREGUNTAR COMO HACER ESTO)
                 # Una vez que se asignó la planificación, se agrega al diccionario acciones
                 accion[idv] = {id_cliente_con_inventario_bajo : planificacion_del_vehiculo}
                 return accion 
-
-
 
 class RollOutSimple(PoliticasSimples):
     '''
@@ -308,7 +441,7 @@ class RollOutSimple(PoliticasSimples):
         # Simular cada acción
         for accion in acciones_factibles:
             # Realizar 5 simulaciones y calcular el costo promedio
-            recompensas_totales = [self.simular_episodio_rollout(accion, estado) for _ in range(3)]
+            recompensas_totales = [self.simular_episodio_rollout(accion, estado) for _ in range(3)] # 6 antes
             costo_promedio = np.mean(recompensas_totales)
 
             # Guardar la acción junto con su costo esperado
@@ -346,8 +479,8 @@ class RollOutSimple(PoliticasSimples):
         for idv in vehiculos_disponibles:
                 # Si no tiene quiebre, se asigna su ruta al cliente crítico
                 id_cliente_con_inventario_bajo = self.determinar_cliente_critico(estado, clientes_disponibles)
-                if id_cliente_con_inventario_bajo == None: # Si no quedan clientes, no se modifica la ruta y se queda 'quieto'
-                    break
+                #if id_cliente_con_inventario_bajo == None: # Si no quedan clientes, no se modifica la ruta y se queda 'quieto'
+                 #   break
                 planificacion_del_vehiculo = self.planificar_entrega(inventario = estado.inventarios_vehiculos[idv], demandas= self.instancia.clientes[id_cliente_con_inventario_bajo].demanda_media)
                 # Se determina su planificación a ese cliente como entregar todo lo que tiene (PREGUNTAR COMO HACER ESTO)
                 # Una vez que se asignó la planificación, se agrega al diccionario acciones
@@ -369,7 +502,7 @@ class RollOutSimple(PoliticasSimples):
         trayectoria = [] # Lista que almacena los estado-accion-recompensas tomadas a lo largo de la simulación, serán guardados como diccionarios 
         costo_traslado = 0
         costos_de_insatisfecha = 0
-        costo_total = 0
+        costo_total = recompensa
         # Se ejecuta hasta que se encuentre un estado terminal
         while True:
             accion = self.tomar_accion_politica_simple(estado)
@@ -383,125 +516,6 @@ class RollOutSimple(PoliticasSimples):
             else:
                 estado = estado_nuevo
         return costo_total
-
-    def obtener_acciones(self, estado:Estado):
-        '''
-        Descripción:
-        Método que devuelve una lista con las acciones posibles para un estado
-        
-        Args: 
-            * estado: Objeto Estado
-        Return:
-            * acciones_posibles: Lista con las acciones factibles
-        '''
-        acciones_posibles = []
-
-        # Agregamos la acción 'nula'
-        acciones_posibles.append({})
-
-        ############################################### agregamos acción redirigir a depot######################
-        # Ahora agregamos la que redirige los vehiculos con stock crítico
-
-        vehiculos_disponibles = self.determinar_vehiculos_disponibles(estado = estado)
-        vehiculos_con_quiebre = self.determinar_vehiculos_con_quiebre(estado = estado)
-
-        accion_quiebre = {}
-        for idv in vehiculos_disponibles:
-            if idv in vehiculos_con_quiebre:
-                accion_quiebre[idv] = {0 :{}} # su nueva ruta será a depot con planificación vacía
-                break
-        # Si hay vehículos con quiebre, agregamos la acción de redirigir a depot
-        if accion_quiebre != {}:
-            acciones_posibles.append(accion_quiebre)
-        ########################################## agregamos las acciones posibles respecto a elegir los 4 clientes con menor ratio y les asignamos hasta 2 vehículos ############
-        clientes_disponibles = self.determinar_clientes_disponibles(estado = estado)
-
-        ids_4_clientes_criticos = self.obtener_4_clientes_criticos(estado = estado, clientes_disponibles = clientes_disponibles)
-
-        # ahora determinamos los 2 vehículos más cercanos a cada cliente crítico
-        for id_cliente in ids_4_clientes_criticos:
-            # Determinamos los vehículos más cercanos
-            vehiculos_mas_cercanos = self.determinar_2_vehiculos_mas_cercanos_disponibles(estado = estado, id_cliente = id_cliente, vehiculos_disponibles = vehiculos_disponibles) # AGREGAR VEHÍCULOS DISPONIBLES
-            # Si no hay vehículos disponibles, no se agrega la acción y se pasa al siguiente vehículo crítico
-            if vehiculos_mas_cercanos == []:
-                pass
-            else:# Para cada vehículo más cercano, se agrega la acción de asignarle el cliente crítico
-                for idv in vehiculos_mas_cercanos:
-                    accion = {idv :{id_cliente: self.planificar_entrega(inventario = estado.inventarios_vehiculos[idv], demandas = self.instancia.clientes[id_cliente].demanda_media)}}
-                    acciones_posibles.append(accion) 
-
-        return acciones_posibles
-
-    def determinar_2_vehiculos_mas_cercanos_disponibles(self, estado, id_cliente, vehiculos_disponibles):
-        '''
-        Descripción:
-            Método que determina los 2 vehículos más cercanos a un cliente.
-
-        Args:
-            * estado: Objeto estado
-            * id_cliente: int
-            * vehiculos_disponibles:  List
-
-        Return:
-            * vehiculos_mas_cercanos: Lista con los ids de los 2 vehículos más cercanos
-        '''
-
-        # Se obtiene la posición del cliente
-        posicion_cliente = np.array([
-            self.instancia.clientes[id_cliente].posicion_x,
-            self.instancia.clientes[id_cliente].posicion_y
-        ])
-
-        # Lista para almacenar (id_vehiculo, distancia)
-        distancias_vehiculos = []
-
-        # Calcular la distancia de cada vehículo al cliente
-        for idv in vehiculos_disponibles:
-            coordenada_vehiculo = np.array([
-                estado.posiciones_vehiculos[idv]['x'],
-                estado.posiciones_vehiculos[idv]['y']
-            ])
-
-            # Calcular distancia euclidiana
-            distancia = np.linalg.norm(posicion_cliente - coordenada_vehiculo)
-
-            # Guardar la distancia junto con el ID del vehículo
-            distancias_vehiculos.append((idv, distancia))
-
-        # Ordenar vehículos por distancia (de menor a mayor)
-        distancias_vehiculos.sort(key=lambda x: x[1])
-
-        # Devolver los 2 vehículos más cercanos
-        return [idv for idv, _ in distancias_vehiculos[:2]]
-
-    def obtener_4_clientes_criticos(self, estado, clientes_disponibles):
-        '''
-        Descripción:
-            Método que determina los 4 clientes con stock crítico considerando el peso de los productos.
-        Args:
-            estado: Estado actual (Estado)
-            clientes_disponibles (List): lista de ids de clientes disponibles
-        Return:
-            Lista con los ids de los 4 clientes más críticos
-        '''
-        
-        # Lista para almacenar clientes con su criticidad
-        clientes_criticidad = []
-
-        for idc, inventario in estado.inventarios_clientes.items():
-            if idc in clientes_disponibles:
-                inventario_total_peso = sum(cantidad * self.instancia.productos[idp].peso 
-                                            for idp, cantidad in inventario.items())
-                clientes_criticidad.append((idc, inventario_total_peso/self.instancia.clientes[idc].capacidad_almacenamiento))
-
-        # Ordenar por inventario más bajo (mayor criticidad)
-        clientes_criticidad.sort(key=lambda x: x[1])
-
-        # Seleccionar los 4 clientes más críticos
-        return [idc for idc, _ in clientes_criticidad[:4]]
-
-
-
 
 class RollOutCluster(PoliticasSimples):
     '''
@@ -537,7 +551,7 @@ class RollOutCluster(PoliticasSimples):
         # Simular cada acción
         for accion in acciones_factibles:
             # Realizar 5 simulaciones y calcular el costo promedio
-            recompensas_totales = [self.simular_episodio_rollout(accion, estado) for _ in range(3)]
+            recompensas_totales = np.array([self.simular_episodio_rollout(accion, estado) for _ in range(3)])
             costo_promedio = np.mean(recompensas_totales)
 
             # Guardar la acción junto con su costo esperado
@@ -563,7 +577,7 @@ class RollOutCluster(PoliticasSimples):
         trayectoria = [] # Lista que almacena los estado-accion-recompensas tomadas a lo largo de la simulación, serán guardados como diccionarios 
         costo_traslado = 0
         costos_de_insatisfecha = 0
-        costo_total = 0
+        costo_total = recompensa
         # Se ejecuta hasta que se encuentre un estado terminal
         while True:
             accion = self.tomar_accion_politica_cluster(estado)
@@ -622,122 +636,6 @@ class RollOutCluster(PoliticasSimples):
                     return accion
         return accion
 
-    def determinar_2_vehiculos_mas_cercanos_disponibles(self, estado, id_cliente, vehiculos_disponibles):
-        '''
-        Descripción:
-            Método que determina los 2 vehículos más cercanos a un cliente.
-
-        Args:
-            * estado: Objeto estado
-            * id_cliente: int
-            * vehiculos_disponibles:  List
-
-        Return:
-            * vehiculos_mas_cercanos: Lista con los ids de los 2 vehículos más cercanos
-        '''
-
-        # Se obtiene la posición del cliente
-        posicion_cliente = np.array([
-            self.instancia.clientes[id_cliente].posicion_x,
-            self.instancia.clientes[id_cliente].posicion_y
-        ])
-
-        # Lista para almacenar (id_vehiculo, distancia)
-        distancias_vehiculos = []
-
-        # Calcular la distancia de cada vehículo al cliente
-        for idv in vehiculos_disponibles:
-            coordenada_vehiculo = np.array([
-                estado.posiciones_vehiculos[idv]['x'],
-                estado.posiciones_vehiculos[idv]['y']
-            ])
-
-            # Calcular distancia euclidiana
-            distancia = np.linalg.norm(posicion_cliente - coordenada_vehiculo)
-
-            # Guardar la distancia junto con el ID del vehículo
-            distancias_vehiculos.append((idv, distancia))
-
-        # Ordenar vehículos por distancia (de menor a mayor)
-        distancias_vehiculos.sort(key=lambda x: x[1])
-
-        # Devolver los 2 vehículos más cercanos
-        return [idv for idv, _ in distancias_vehiculos[:2]]
-
-    def obtener_4_clientes_criticos(self, estado, clientes_disponibles):
-        '''
-        Descripción:
-            Método que determina los 4 clientes con stock crítico considerando el peso de los productos.
-        Args:
-            estado: Estado actual (Estado)
-            clientes_disponibles (List): lista de ids de clientes disponibles
-        Return:
-            Lista con los ids de los 4 clientes más críticos
-        '''
-        
-        # Lista para almacenar clientes con su criticidad
-        clientes_criticidad = []
-
-        for idc, inventario in estado.inventarios_clientes.items():
-            if idc in clientes_disponibles:
-                inventario_total_peso = sum(cantidad * self.instancia.productos[idp].peso 
-                                            for idp, cantidad in inventario.items())
-                clientes_criticidad.append((idc, inventario_total_peso/self.instancia.clientes[idc].capacidad_almacenamiento))
-
-        # Ordenar por inventario más bajo (mayor criticidad)
-        clientes_criticidad.sort(key=lambda x: x[1])
-
-        # Seleccionar los 4 clientes más críticos
-        return [idc for idc, _ in clientes_criticidad[:4]]
-
-    def obtener_acciones(self, estado:Estado):
-        '''
-        Descripción:
-        Método que devuelve una lista con las acciones posibles para un estado
-        
-        Args: 
-            * estado: Objeto Estado
-        Return:
-            * acciones_posibles: Lista con las acciones factibles
-        '''
-        acciones_posibles = []
-
-        # Agregamos la acción 'nula'
-        acciones_posibles.append({})
-
-        ############################################### agregamos acción redirigir a depot######################
-        # Ahora agregamos la que redirige los vehiculos con stock crítico
-
-        vehiculos_disponibles = self.determinar_vehiculos_disponibles(estado = estado)
-        vehiculos_con_quiebre = self.determinar_vehiculos_con_quiebre(estado = estado)
-
-        accion_quiebre = {}
-        for idv in vehiculos_disponibles:
-            if idv in vehiculos_con_quiebre:
-                accion_quiebre[idv] = {0 :{}} # su nueva ruta será a depot con planificación vacía
-                break
-        # Si hay vehículos con quiebre, agregamos la acción de redirigir a depot
-        if accion_quiebre != {}:
-            acciones_posibles.append(accion_quiebre)
-        ########################################## agregamos las acciones posibles respecto a elegir los 4 clientes con menor ratio y les asignamos hasta 2 vehículos ############
-        clientes_disponibles = self.determinar_clientes_disponibles(estado = estado)
-
-        ids_4_clientes_criticos = self.obtener_4_clientes_criticos(estado = estado, clientes_disponibles = clientes_disponibles)
-
-        # ahora determinamos los 2 vehículos más cercanos a cada cliente crítico
-        for id_cliente in ids_4_clientes_criticos:
-            # Determinamos los vehículos más cercanos
-            vehiculos_mas_cercanos = self.determinar_2_vehiculos_mas_cercanos_disponibles(estado = estado, id_cliente = id_cliente, vehiculos_disponibles = vehiculos_disponibles) # AGREGAR VEHÍCULOS DISPONIBLES
-            # Si no hay vehículos disponibles, no se agrega la acción y se pasa al siguiente vehículo crítico
-            if vehiculos_mas_cercanos == []:
-                pass
-            else:# Para cada vehículo más cercano, se agrega la acción de asignarle el cliente crítico
-                for idv in vehiculos_mas_cercanos:
-                    accion = {idv :{id_cliente: self.planificar_entrega(inventario = estado.inventarios_vehiculos[idv], demandas = self.instancia.clientes[id_cliente].demanda_media)}}
-                    acciones_posibles.append(accion) 
-
-        return acciones_posibles
-
     def aplicar_k_means(self):
         '''
         Método que aplica el algoritmo de k-means a los clientes
@@ -750,9 +648,6 @@ class RollOutCluster(PoliticasSimples):
         # devuelve un diccionario con la asignación de los clientes a los vehiculos. Ejemplo {1:[1,2,3], 2:[4,5,6], 3:[7,8,9]}
         asignacion = kmeans_clustering_sklearn(n_clusters=M, clientes=posiciones_clientes)
         return asignacion
-
-
-
 
 class MonteCarlo(PoliticasSimples):
     ''' Objeto que implementará la política MC Onpolicy al problema'''
@@ -787,23 +682,32 @@ class MonteCarlo(PoliticasSimples):
 
     def actualizar_mejores_betas(self):
         '''
-        Descripción:
-        Método que actualiza los mejores betas encontrados en el entrenamiento cada 10 episodios
+        Actualiza los mejores parámetros beta usando 20 simulaciones Monte Carlo,
+        optimizando el rendimiento y uso de memoria.
         '''
-        # ejecutamos el algoritmo MC OnPolicy para encontrar el óptimo promedio utilizando los mejores betas
-        recompensas = np.array([])
-        for _ in range(10):
-            trayectoria,_ = self.probar_politica_optima_MC()
-            costo_episodio = sum(estado_accion['recompensa'] for estado_accion in trayectoria)
-            recompensas = np.append(recompensas,costo_episodio)
+        # 1. Colección eficiente de recompensas
+        recompensas = []
+        for _ in range(20):
+            trayectoria = self.probar_politica_optima_MC()[0]  # Evita variable no usada
+            costo_episodio = sum(paso['recompensa'] for paso in trayectoria)
+            recompensas.append(costo_episodio)
+        
+        # 2. Cálculo vectorizado del promedio
         promedio_recompensa = np.mean(recompensas)
+        
+        # 3. Actualización de registros optimizada
         self.registro_optimos = np.append(self.registro_optimos, promedio_recompensa)
+        
+        # 4. Actualización condicional de mejores betas
         if promedio_recompensa < self.optimo_mejor_betas:
-            self.mejores_betas = copy.deepcopy(self.betas)
+            self.mejores_betas = self.betas.copy()  # Copy de numpy vs deepcopy
             self.optimo_mejor_betas = promedio_recompensa
-        mejor_optimo_betas = copy.deepcopy(self.optimo_mejor_betas)
-        #guardamos el registro de los mejores betas
-        self.registro_optimos_mejores_betas = np.append(self.registro_optimos_mejores_betas, mejor_optimo_betas)
+        
+        # 5. Guardado eficiente del mejor óptimo
+        self.registro_optimos_mejores_betas = np.append(
+            self.registro_optimos_mejores_betas,
+            self.optimo_mejor_betas  # Evita copia redundante
+        )
 
     def run(self):
         '''
@@ -816,46 +720,34 @@ class MonteCarlo(PoliticasSimples):
 
     def crear_betas(self):
         '''
-        Descripción:
-        *   Método que crea la matriz de betas
+        Crea un vector de parámetros beta que coincide exactamente con la estructura de features.
         '''
-        bo = 0
-        betas = np.array([])
-        betas = np.append(betas, bo) # agregamos el parámetro constante
-
-        # agregamos un beta igual a 0 asociado al primer feature de tiempo restante (1)
-        betas = np.append(betas, bo)
-
-        # agregamos los features asociados al inventario promedio que tienen de ese producto todos los vehículos (|P|)
-        #for idp in self.instancia.id_productos:
-         #   betas = np.append(betas, bo)
-
-        # agregamos los features asociados al inventario que tiene cada cliente (|N|* |P|)
-        for idc in self.instancia.id_clientes:
-            for idp in self.instancia.id_productos:
-                betas = np.append(betas, bo)
+        betas = [0.0]  # Beta para el término constante (feature inicial)
         
-        # agregamos los features asociados a la entrega relativa que tiene cada cliente (|N| * |P|)
-        for idc in self.instancia.id_clientes:
-            for idp in self.instancia.id_productos:
-                betas = np.append(betas, bo)
+        # Beta para el feature de tiempo restante (1 beta)
+        betas.append(0.0)
         
-        #agregamos los features para cada vehículo (|M|* |P|)
+        # Betas para inventario por cliente-producto (|N| * |P| betas)
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                betas.append(0.0)
         
-        for id_vehiculo in self.instancia.id_vehiculos:
-            for idp in self.instancia.id_productos:
-                betas = np.append(betas, bo)
-
-        # agregamos el feature de número de vehículos con planificación |1|
-        #betas = np.append(betas, bo)
-
-        # Porcentaje de vehículos en camino al depot si tienen menos del 20% de su inventario utilizado
-        #betas = np.append(betas, bo)
-
-        self.betas = betas
+        
+        # Betas para vehículo-producto (|M| * |P| betas)
+        for _ in self.instancia.id_vehiculos:
+            for _ in self.instancia.id_productos:
+                betas.append(0.0)
+        
+        # Betas para entrega con distancia (4 betas por cliente-producto: base + 3 umbrales)
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                # 4 betas: [base, <300, <1000, >=1500]
+                betas.extend([0.0, 0.0, 0.0, 0.0])
+        
+        self.betas = np.array(betas, dtype=np.float32)
 
     def obtener_features(self, estado, accion):
-        '''
+        '''        
         Descripción:
         Método que obtiene los features de un estado dado
         Args:
@@ -863,105 +755,118 @@ class MonteCarlo(PoliticasSimples):
             * accion: Diccionario con la acción a aplicar
         Return:
             * features: Lista con los features del estado
-        '''
+        '''        
 
-        ratio_inventario_clientes_productos = {} # diccionario donde almacenamos los ratios de cada cliente
-        #creamos copia del estado
+        # Precomputar estructuras necesarias
+        clientes = self.instancia.clientes
+        productos = self.instancia.productos
+        vehiculos = estado.posiciones_vehiculos
+        
+                #creamos copia del estado
         estado_copia = copy.copy(estado)
         # aplicamos la acción
         self.proceso.actualizar_planificacion(estado_copia, accion)
         planificacion_post = estado_copia.planificacion
-        ratios_utilizacion_vehiculos = self.calcular_ratios_utilizacion_vehiculos(estado= estado)
-        #creamos una lista vacia para almacenar los features
-        features = np.array([1])
-        ###########################################################################################
-        # Agregamos el feature de tiempo restante (1 features)
-        features = np.append(features, (self.instancia.horizonte_tiempo - estado.tiempo)/self.instancia.horizonte_tiempo) # valor entre 0 y 1 
-        ###########################################################################################
-        # agregamos los features de producto promedio que se tiene de cada producto en los vehículos (|P| features)
-        #for idp in self.instancia.id_productos:
-         #   inventario_promedio = sum(estado.inventarios_vehiculos[idv][idp] for idv in self.instancia.id_vehiculos) / len(self.instancia.id_vehiculos)
-          #  features = np.append(features, inventario_promedio)
-        ####################################################################################################################
-        # agregamos los features de inventario promedio que se tiene cada cliente por producto (|N| * |P| features)
-        for id_cliente in self.instancia.id_clientes:
-            ratio_inventario_clientes_productos[id_cliente] = {}
-            for idp in self.instancia.id_productos:
-                ratio_inventario_cliente_producto = (estado.inventarios_clientes[id_cliente][idp] * self.instancia.productos[idp].peso) / self.instancia.clientes[id_cliente].capacidad_almacenamiento
-                features = np.append(features, ratio_inventario_cliente_producto)
-                ratio_inventario_clientes_productos[id_cliente][idp]= ratio_inventario_cliente_producto 
-        ####################################################################################################################
-        # agregamos el feature de entrega relativa al ratio que tiene el cliente (|N|*|P|)
-        for id_cliente in self.instancia.id_clientes:
-            capacidad_cliente = self.instancia.clientes[id_cliente].capacidad_almacenamiento
-            for idp in self.instancia.id_productos:
-                if ratio_inventario_clientes_productos[id_cliente][idp] < 0.2:
-                    ratio_peso_entrega = self.calcular_peso_por_cliente_producto(accion= planificacion_post, id_cliente= id_cliente, id_producto= idp) / capacidad_cliente
-                    feature = ratio_peso_entrega
-                    features = np.append(features, feature)
-                else:
-                    features = np.append(features, 0)
-        ####################################################################################################################
-        # agregamos el feature sobre si el vehículo va al depot en caso de que tenga quiebre de stock |M|* |P|
+
+        # 1. Precalcular posiciones y capacidades
+        pos_clientes = {
+            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
+            for idc in self.instancia.id_clientes
+        }
         
-        for id_vehiculo in self.instancia.id_vehiculos:
-            for idp in self.instancia.id_productos:
-                if not planificacion_post[id_vehiculo]:
-                    features = np.append(features, 0)
+        # 2. Inicializar lista de features (eficiente para append) |1|
+        features_list = [1.0]  # Feature inicial
+        
+        # 3. Feature de tiempo restante |1|
+        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
+        features_list.append(tiempo_norm)
+        
+        # 4. Features de inventario promedio por cliente-producto |N||P|
+        ratio_inventario_clientes_productos = {}
+        for idc in self.instancia.id_clientes:
+            cliente = clientes[idc]
+            ratio_inventario_clientes_productos[idc] = {}
+            for idp in productos:
+                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
+                features_list.append(ratio)
+                ratio_inventario_clientes_productos[idc][idp] = ratio
+        
+
+        # 6. Features de depot por vehículo-producto  |M||P|
+        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
+        for idv in self.instancia.id_vehiculos:
+            for idp in productos:
+                if not planificacion_post[idv]:
+                    features_list.append(0.0)
+                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
+                    features_list.append(1.0)
+                else:
+                    features_list.append(0.0)
+        
+        # 3. Features combinados: entrega base + distancia  |N||P|4|
+        for idc in self.instancia.id_clientes:
+            xc, yc = pos_clientes[idc]
+            capacidad = clientes[idc].capacidad_almacenamiento
+            
+            for idp in productos:
+                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_actual >= 0.2:
+                    # Agregar 4 ceros si no cumple el ratio
+                    features_list.extend([0.0, 0.0, 0.0, 0.0])
                     continue
-                if ratios_utilizacion_vehiculos[id_vehiculo][idp] < 0.1 and next(iter(planificacion_post[id_vehiculo])) == 0:
-                    features = np.append(features, 1)
-                else:
-                    features = np.append(features, 0)
+                    
+                # Calcular ratio base y vehículo asignado
+                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
+                ratio_base = ratio_peso / capacidad  # Feature base sin distancia
+                
+                if idv is None or idv not in vehiculos:
+                    features_list.extend([ratio_base, 0.0, 0.0, 0.0])
+                    continue
+                    
+                # Calcular distancia una sola vez
+                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
+                distancia = ((xc - xv)**2 + (yc - yv)**2)**0.5
+                
+                # Features de distancia
+                f_300 = ratio_base if distancia <= 500 else 0.0
+                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
+                f_1500 = ratio_base if 1000 < distancia else 0.0
+                
+                features_list.extend([ratio_base, f_300, f_1000, f_1500])
         
-                    ####################################################################################################################
-        
-        # beta de número de vehículos con planificación |1|
-        '''
-        vehículos_con_planificación = 0
-        for idv in self.instancia.id_vehiculos:
-            if planificacion_post[idv]:
-                vehículos_con_planificación += 1
-        proporcion_vehiculos_con_planificación = vehículos_con_planificación / len(self.instancia.id_vehiculos)
-        features = np.append(features, proporcion_vehiculos_con_planificación)
-        '''
-        ####################################################################################################################
-        
-        # beta de número de vehículos que está en camino al depot en caso de que tenga menos del 20% de su inventario utilizado |M|
-        '''
-        vehículos_en_camino = 0
-        for idv in self.instancia.id_vehiculos:
-            if not planificacion_post[idv]:
-                continue
-            elif sum(ratios_utilizacion_vehiculos[idv][idp] for idp in self.instancia.id_productos) < 0.2 and next(iter(planificacion_post[idv])) == 0:
-                vehículos_en_camino += 1
-        proporcion_vehiculos_en_camino = vehículos_en_camino / len(self.instancia.id_vehiculos)
-        features = np.append(features, proporcion_vehiculos_en_camino)
-        '''
-        ####################################################################################################################
-
-
-        return features
+        # Convertir a array numpy una sola vez
+        return np.array(features_list, dtype=np.float32)
 
     def ejecutar_politica_epsilon_greedy(self):
-        '''
-        Descripción:
-        Método que ejecuta un episodio siguiendo la política epsilon greedy
-        '''
-
-        # Comenzamos en el estado inicial
-        estado = self.proceso.determinar_estado_inicial()
+        '''Ejecuta un episodio con política epsilon-greedy optimizada.'''
+        proceso = self.proceso  # Cachear para acceso rápido
+        es_terminal = self.es_terminal  # Evitar búsquedas de atributo
         trayectoria = []
+        
+        estado = proceso.determinar_estado_inicial()
         while True:
+            # Paso 1: Tomar acción y obtener features
             accion = self.tomar_accion_epsilon_greedy(estado)
             features = self.obtener_features(estado, accion)
-            nuevo_estado, recompensa, _, _ = self.proceso.transicion(estado, accion)
-            trayectoria.append({'estado': estado, 'accion':accion, 'features': features, 'recompensa':recompensa})
-            if self.es_terminal(estado):
+            
+            # Paso 2: Transición de estado (ignoramos variables no usadas)
+            nuevo_estado, recompensa, *_ = proceso.transicion(estado, accion)
+            
+            # Paso 3: Almacenar datos (usamos tupla para menor overhead)
+            trayectoria.append( (estado, accion, features, recompensa) )
+            
+            # Paso 4: Verificar condición de término
+            if es_terminal(nuevo_estado):  # ¡Clave! Verificar nuevo_estado
                 break
-            else:
-                estado = nuevo_estado 
-        return trayectoria
+                
+            estado = nuevo_estado
+            
+        return [{
+            'estado': s,
+            'accion': a,
+            'features': f,
+            'recompensa': r
+        } for s, a, f, r in trayectoria]
 
     def entrenar_modelo(self):
         ''' Método que ejecuta el algoritmo MC OnPolicy'''
@@ -1116,24 +1021,27 @@ class MonteCarlo(PoliticasSimples):
         Descripción:
         Método que calcula el peso de entrega de un cliente en relación a un producto
         Args:
-            * accion: Acción
+            * accion: Diccionario con la planificación de todos los vehículos
             * id_cliente: ID del cliente
             * id_producto: ID del producto
         Return:
             * peso_entrega: Peso de entrega del cliente en relación al producto
+            * id_vehículo: ID del vehículo que tiene la entrega hacia ese cliente
         '''
-        total_peso = 0.0
-        for vehiculo in accion.values():
+        total_peso = 0.
+        idv = None
+        for id_vehículo , vehiculo in accion.items():
             # Verificar si el vehículo tiene acción
             if not vehiculo:
                 continue  # Saltar vehículos inactivos
             # Obtener destino y productos (seguro porque vehiculo no está vacío)
             id_destino, productos = next(iter(vehiculo.items()))
             if id_destino == id_cliente:
+                idv = id_vehículo
                 for idp, cantidad in productos.items():
                     if idp == id_producto:
                         total_peso += cantidad * self.instancia.productos[id_producto].peso
-        return total_peso
+        return total_peso, idv
 
     def calcular_ratios_utilizacion_vehiculos(self, estado: Estado):
         """
@@ -1163,117 +1071,18 @@ class MonteCarlo(PoliticasSimples):
                 ratio = 0.0
         return ratios
 
-    def obtener_acciones(self, estado:Estado):
-        '''
-        Descripción:
-        Método que devuelve una lista con las acciones posibles para un estado
-        
-        Args: 
-            * estado: Objeto Estado
-        Return:
-            * acciones_posibles: Lista con las acciones factibles
-        '''
-        acciones_posibles = []
-
-        # Agregamos la acción 'nula'
-        acciones_posibles.append({})
-
-        ############################################### agregamos acción redirigir a depot######################
-        # Ahora agregamos la que redirige los vehiculos con stock crítico
-
-        vehiculos_disponibles = self.determinar_vehiculos_disponibles(estado = estado)
-        vehiculos_con_quiebre = self.determinar_vehiculos_con_quiebre(estado = estado)
-
-        accion_quiebre = {}
-        for idv in vehiculos_disponibles:
-            if idv in vehiculos_con_quiebre:
-                accion_quiebre[idv] = {0 :{}} # su nueva ruta será a depot con planificación vacía
-                break
-        # Si hay vehículos con quiebre, agregamos la acción de redirigir a depot
-        if accion_quiebre != {}:
-            acciones_posibles.append(accion_quiebre)
-        ########################################## agregamos las acciones posibles respecto a elegir los 4 clientes con menor ratio y les asignamos hasta 2 vehículos ############
-        clientes_disponibles = self.determinar_clientes_disponibles(estado = estado)
-
-        ids_4_clientes_criticos = self.obtener_4_clientes_criticos(estado = estado, clientes_disponibles = clientes_disponibles)
-
-        # ahora determinamos los 2 vehículos más cercanos a cada cliente crítico
-        for id_cliente in ids_4_clientes_criticos:
-            # Determinamos los vehículos más cercanos
-            vehiculos_mas_cercanos = self.determinar_2_vehiculos_mas_cercanos_disponibles(estado = estado, id_cliente = id_cliente, vehiculos_disponibles = vehiculos_disponibles) # AGREGAR VEHÍCULOS DISPONIBLES
-            # Si no hay vehículos disponibles, no se agrega la acción y se pasa al siguiente vehículo crítico
-            if vehiculos_mas_cercanos == []:
-                pass
-            else:# Para cada vehículo más cercano, se agrega la acción de asignarle el cliente crítico
-                for idv in vehiculos_mas_cercanos:
-                    accion = {idv :{id_cliente: self.planificar_entrega(inventario = estado.inventarios_vehiculos[idv], demandas = self.instancia.clientes[id_cliente].demanda_media)}}
-                    acciones_posibles.append(accion) 
-        return acciones_posibles
-
-    def obtener_4_clientes_criticos(self, estado, clientes_disponibles):
-        '''
-        Descripción:
-            Método que determina los 4 clientes con stock crítico considerando el peso de los productos.
-        Args:
-            estado: Estado actual (Estado)
-            clientes_disponibles (List): lista de ids de clientes disponibles
-        Return:
-            Lista con los ids de los 4 clientes más críticos
-        '''
-        
-        # Lista para almacenar clientes con su criticidad
-        clientes_criticidad = []
-
-        for idc, inventario in estado.inventarios_clientes.items():
-            if idc in clientes_disponibles:
-                inventario_total_peso = sum(cantidad * self.instancia.productos[idp].peso 
-                                            for idp, cantidad in inventario.items())
-                clientes_criticidad.append((idc, inventario_total_peso/self.instancia.clientes[idc].capacidad_almacenamiento))
-
-        # Ordenar por inventario más bajo (mayor criticidad)
-        clientes_criticidad.sort(key=lambda x: x[1])
-
-        # Seleccionar los 4 clientes más críticos
-        return [idc for idc, _ in clientes_criticidad[:4]]
-
-    def determinar_2_vehiculos_mas_cercanos_disponibles(self, estado, id_cliente, vehiculos_disponibles):
-        '''
-        Descripción:
-            Método que determina los 2 vehículos más cercanos a un cliente.
-
-        Args:
-            * estado: Objeto estado
-            * id_cliente: int
-            * vehiculos_disponibles:  List
-
-        Return:
-            * vehiculos_mas_cercanos: Lista con los ids de los 2 vehículos más cercanos
-        '''
-
-        # Se obtiene la posición del cliente
-        posicion_cliente = np.array([
-            self.instancia.clientes[id_cliente].posicion_x,
-            self.instancia.clientes[id_cliente].posicion_y
-        ])
-
-        # Lista para almacenar (id_vehiculo, distancia)
-        distancias_vehiculos = []
-
-        # Calcular la distancia de cada vehículo al cliente
-        for idv in vehiculos_disponibles:
-            coordenada_vehiculo = np.array([
-                estado.posiciones_vehiculos[idv]['x'],
-                estado.posiciones_vehiculos[idv]['y']
-            ])
-
-            # Calcular distancia euclidiana
-            distancia = np.linalg.norm(posicion_cliente - coordenada_vehiculo)
-
-            # Guardar la distancia junto con el ID del vehículo
-            distancias_vehiculos.append((idv, distancia))
-
-        # Ordenar vehículos por distancia (de menor a mayor)
-        distancias_vehiculos.sort(key=lambda x: x[1])
-
-        # Devolver los 2 vehículos más cercanos
-        return [idv for idv, _ in distancias_vehiculos[:2]]
+class MonteCarloRN(MonteCarlo):
+    '''
+    Clase que implementa la política MC Onpolicy utilizando redes neuronales. Hereda todo de la clase padre
+    '''
+    def __init__(self, instancia, proceso, episodios, epsilon, learning_rate):
+        super().__init__(instancia, proceso, episodios, epsilon, learning_rate)
+        self.betas = None
+        self.mejores_betas = np.array([])
+        self.optimo_mejor_betas = np.array([])
+        self.registro_optimos_mejores_betas = np.array([])
+        self.registro_optimos = np.array([])
+        #self.red_neuronal = tf.keras.Sequential([tf.keras.layers.Dense(10, activation='relu', input_shape=(4,)), tf.keras.layers.Dense(8, activation='relu'), tf.keras.layers.Dense(1)])
+        self.red_neuronal.compile(optimizer='adam', loss='mse')
+        self.crear_betas()
+        self.inicializar_mejores_betas()
