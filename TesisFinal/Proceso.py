@@ -74,11 +74,7 @@ class Proceso:
             # Primero aumentamos en una unidad el tiempo
             estado.tiempo += 1
             intervalo_de_tiempo += 1
-            # Si el tiempo es mayor al horizonte de tiempo, se termina el ciclo y se redirigen todos al depot
-            #if estado.tiempo >= self.instancia.horizonte_tiempo:
-             #   for idv in self.instancia.id_vehiculos:
-              #      estado.planificacion[idv] = {0: {}}                
-               # break
+
             # Ahora, actualizamos las posiciones de los vehiculos según la velocidad que tengan y actualizamos los inventarios de los clientes/vehiculos según la planificación
             for idv, vehiculo in self.instancia.vehiculos.items():
                 # Si el vehiculo no tiene planificación, no se actualiza nada 
@@ -120,6 +116,7 @@ class Proceso:
                                     estado.inventarios_vehiculos[idv][idp] = max(0,inventario_vehiculo_referencial)
                                     # Actualizamos los inventarios de los clientes acorde a lo que efectivamente le pudo llegar
                                     estado.inventarios_clientes[id_destino][idp] += cantidad
+                                    estado.planificacion[idv] = {}
                             else:
                                 if peso_entrega== 0:
                                     continue
@@ -148,12 +145,6 @@ class Proceso:
                     costos_de_almacenamiento += exceso_inventario * cliente.costos_inventario[idp]                    
                     inventarios_cliente[idp] = max(0, inventario - demanda)
 
-
-                # si el inventario del clientes está bajo el umbral se genera un estado
-                #inventario_utilizado_cliente = sum(estado.inventarios_clientes[idc][idp] * self.instancia.productos[idp].peso for idp in self.instancia.id_productos)
-                #if estado.inventarios_clientes[idc][idp] < self.instancia.umbral_inventario_clientes:
-                    #Es_estado = True
-
             # Si el tiempo es mayor al horizonte de tiempo, se termina el ciclo y se redirigen todos al depot
             if estado.tiempo >= self.instancia.horizonte_tiempo:
                 for idv in self.instancia.id_vehiculos:
@@ -172,12 +163,10 @@ class Proceso:
             posicion_anterior = estado_original.posiciones_vehiculos[idv]
             posicion_nueva = estado.posiciones_vehiculos[idv]
             # calculamos el costo de traslado de los vehiculos de el estado actual al nuevo estado
-            costos_de_traslado += np.linalg.norm(np.array([posicion_anterior['x'], posicion_anterior['y']]) - np.array([posicion_nueva['x'], posicion_nueva['y']])) #distancia_euclidiana( punto1 = np.array([posicion_anterior['x'], posicion_anterior['y']]), punto2 = np.array([posicion_nueva['x'], posicion_nueva['y']]))
-
+            costos_de_traslado += np.linalg.norm(np.array([posicion_anterior['x'], posicion_anterior['y']]) - np.array([posicion_nueva['x'], posicion_nueva['y']]))
 
         # Calculamos la recompensa de la transición
         recompensa = costos_de_traslado + costos_de_demanda_insatisfecha + costos_de_almacenamiento
-
         return estado, recompensa, costos_de_traslado, costos_de_demanda_insatisfecha
 
     def determinar_c_st_at(self, estado_original, accion):
@@ -205,6 +194,8 @@ class Proceso:
                 else:
                     #ahora calculamos el traslado hacia ese id de cliente
                     costo += distancia_euclidiana( punto1 = np.array([posicion_actual_x, posicion_actual_y]), punto2 = np.array([self.instancia.clientes[id_cliente].posicion_x, self.instancia.clientes[id_cliente].posicion_y]))
+                    #costo += np.linalg.norm(np.array([posicion_actual_x, posicion_actual_y]) - np.array([self.instancia.clientes[id_cliente].posicion_x, self.instancia.clientes[id_cliente].posicion_y])) #distancia_euclidiana( punto1 = np.array([posicion_anterior['x'], posicion_anterior['y']]), punto2 = np.array([posicion_nueva['x'], posicion_nueva['y']]))
+
             return costo
 
 
@@ -224,7 +215,6 @@ class Proceso:
         return costos_de_traslado, 
 
 
-
     def actualizar_planificacion(self, estado: Estado, accion):
         '''
         Método que actualiza la planificacion
@@ -232,9 +222,6 @@ class Proceso:
             # Actualizamos la planificación según la acción que se toma, 'sobreescribiendo' la planificación anterior
         for idv, planificacion in accion.items():
             estado.planificacion[idv] = planificacion
-
-
-
 
     def actualizar_posicion(self, posicion_inicial, destino, velocidad, tiempo):
         """

@@ -35,7 +35,7 @@ class Simulacion:
         politica_clusterizada = PoliticaSimpleClusterisada(instancia, proceso)
         PoliticaRolloutSimple = RollOutSimple( instancia= instancia, proceso= proceso)
         PoliticaRolloutCluster = RollOutCluster(instancia, proceso)
-        PoliticiaMonteCarlo = MonteCarlo(instancia = instancia, proceso = proceso, episodios = 5000, epsilon=0.01, learning_rate=0.001) # para que converja debe estar en 10^-6  episodios = 10000, epsilon=0.3, learning_rate=0.00001) Esta da bien
+        PoliticiaMonteCarlo = MonteCarlo(instancia = instancia, proceso = proceso, episodios = 5000, epsilon=0.05, learning_rate=0.001)
         
         PoliticiaMonteCarlo.entrenar_modelo()
 
@@ -53,7 +53,6 @@ class Simulacion:
         resultado_MC = sum(estado_accion['recompensa'] for estado_accion in trayectoria_MC)
 
         return resultado_simple, costo_traslado, costo_insatisfecha, resultado_cluster, costo_traslado_cluster, costo_insatisfecha_cluster,resultado_rollout_simple, costo_traslado_RolloutSimple, costo_insatisfecha_RolloutSimple, resultado_rollout_cluster, costo_traslado_RolloutCluster, costo_insatisfecha_RolloutCluster
-        
 
     def procesar_instancias(self):
         """
