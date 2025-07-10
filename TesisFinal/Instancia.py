@@ -125,6 +125,7 @@ class Instancia:
         self.id_clientes = list(self.clientes.keys())
         self.id_vehiculos = list(self.vehiculos.keys())
         self.id_productos = list(self.productos.keys())
+    
     def cargar_distancias(self):
         '''
         Método que lee la instancia y devuevle un diccionario con la distancia entre los nodos del problema

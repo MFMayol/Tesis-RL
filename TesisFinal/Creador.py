@@ -66,6 +66,7 @@ def generar_instancia_irp(
         inventarios = ET.SubElement(cliente, "Inventarios")
         costos = ET.SubElement(cliente, "Costos")
         demandas = ET.SubElement(cliente, "Demandas")
+        penalti = np.random.uniform(1, 120)
         
         for j in range(num_productos):
 
@@ -76,12 +77,12 @@ def generar_instancia_irp(
             # Costos
             costo_prod = ET.SubElement(costos, f"Producto{j+1}")
             ET.SubElement(costo_prod, "CostoInventario").text = '0'  
-            ET.SubElement(costo_prod, "CostoPenalizacion").text = str(round(random.uniform(1, 110))) #
+            ET.SubElement(costo_prod, "CostoPenalizacion").text = str(round(penalti)) #
             
             # Demandas por período
             demanda_prod = ET.SubElement(demandas, f"Producto{j+1}")
-            ET.SubElement(demanda_prod, "Media").text = str(round(np.random.uniform(1,3) )) #
-            ET.SubElement(demanda_prod, "DesvEst").text = str(round(random.uniform(1,3), 2))   # antes estaba entre 0.3 y 0.5
+            ET.SubElement(demanda_prod, "Media").text = str(round(np.random.uniform(1,2) )) #
+            ET.SubElement(demanda_prod, "DesvEst").text = str(round(random.uniform(1,2), 2))   # instancias features (entre 1 y 3 con desviación de 2)
 
     # Generar información de vehículos
     vehiculos = ET.SubElement(root, "Vehiculos")
@@ -90,11 +91,11 @@ def generar_instancia_irp(
         vehiculo.set("id", str(i+1))
         
         # Capacidad del vehículo (en peso)
-        ET.SubElement(vehiculo, "Capacidad").text = str(300*num_productos)  #antes era 400 
+        ET.SubElement(vehiculo, "Capacidad").text = str(300*num_productos)  #
         
         # Velocidad del vehículo
-        ET.SubElement(vehiculo, "VelocidadMedia").text = "50" #  puse 3 antes
-        ET.SubElement(vehiculo, "DesvEstVelocidad").text = '5' #"0.1" # str(round(random.uniform(5.0, 10.0), 2)) puse 1 antes
+        ET.SubElement(vehiculo, "VelocidadMedia").text = "50" 
+        ET.SubElement(vehiculo, "DesvEstVelocidad").text = '5' 
     
     # Convertir el XML a string con formato agradable
     xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="    ")

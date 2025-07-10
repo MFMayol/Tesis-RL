@@ -1,9 +1,13 @@
 from Estado import Estado
 import numpy as np
-from FuncionesAuxiliares import distancia_euclidiana, kmeans_clustering_sklearn
+from FuncionesAuxiliares import distancia_euclidiana, kmeans_clustering_sklearn, fourier_transform_features_vectorized
 from abc import ABC, abstractmethod
 import copy
 #import tensorflow as tf
+from collections import deque
+import random
+
+
 
 class Politica:
     '''
@@ -304,6 +308,9 @@ class PoliticasSimples(Politica):
         # Devolver los 2 vehículos más cercanos
         return [idv for idv, _ in distancias_vehiculos[:2]]
 
+
+
+
 class PoliticaSimpleClusterisada(PoliticasSimples):
     '''
     Clase que implementa la politica de decisiones y ejecuta la simulación utilizando la politica simple clusterizada
@@ -441,7 +448,7 @@ class RollOutSimple(PoliticasSimples):
         # Simular cada acción
         for accion in acciones_factibles:
             # Realizar 5 simulaciones y calcular el costo promedio
-            recompensas_totales = [self.simular_episodio_rollout(accion, estado) for _ in range(3)] # 6 antes
+            recompensas_totales = [self.simular_episodio_rollout(accion, estado) for _ in range(2)] # 6 antes
             costo_promedio = np.mean(recompensas_totales)
 
             # Guardar la acción junto con su costo esperado
@@ -530,7 +537,6 @@ class RollOutCluster(PoliticasSimples):
         super().__init__(instancia, proceso)
         self.asignaciones_k_means = self.aplicar_k_means()
 
-
     def tomar_accion(self, estado: Estado):
         '''
         Método que determina la mejor acción según la política RollOut.
@@ -551,7 +557,7 @@ class RollOutCluster(PoliticasSimples):
         # Simular cada acción
         for accion in acciones_factibles:
             # Realizar 5 simulaciones y calcular el costo promedio
-            recompensas_totales = np.array([self.simular_episodio_rollout(accion, estado) for _ in range(3)])
+            recompensas_totales = np.array([self.simular_episodio_rollout(accion, estado) for _ in range(2)])
             costo_promedio = np.mean(recompensas_totales)
 
             # Guardar la acción junto con su costo esperado
@@ -649,21 +655,293 @@ class RollOutCluster(PoliticasSimples):
         asignacion = kmeans_clustering_sklearn(n_clusters=M, clientes=posiciones_clientes)
         return asignacion
 
-class MonteCarlo(PoliticasSimples):
-    ''' Objeto que implementará la política MC Onpolicy al problema'''
 
+class Modelos_de_aproximacion(PoliticasSimples):
+    '''
+    Clase que implementa los modelos de aproximación utilizados en la política MC Onpolicy, heredado de PoliticasSimples
+    ''' 
     def __init__(self, instancia, proceso, episodios, epsilon, learning_rate):
         super().__init__(instancia, proceso)
         self.episodios = episodios
         self.epsilon = epsilon
+        #self.epsilon = 0.5
+        #self.learning_rate = 0.01
         self.learning_rate = learning_rate
+        self.n_episodio = 0
+
+    '''
+    def obtener_features(self, estado, accion):
+            
+        Descripción:
+        Método que obtiene los features de un estado dado
+        Args:
+            * estado: Objeto Estado
+            * accion: Diccionario con la acción a aplicar
+        Return:
+            * features: Lista con los features del estado
+                
+
+        # Precomputar estructuras necesarias
+        clientes = self.instancia.clientes
+        productos = self.instancia.productos
+        vehiculos = estado.posiciones_vehiculos
+        
+        #creamos copia del estado
+        estado_copia = copy.deepcopy(estado)
+        # aplicamos la acción
+        self.proceso.actualizar_planificacion(estado_copia, accion)
+        planificacion_post = estado_copia.planificacion
+
+        # 1. Precalcular posiciones y capacidades
+        pos_clientes = {
+            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
+            for idc in self.instancia.id_clientes
+        }
+        
+
+        # 2. Inicializar lista de features (eficiente para append) |1|
+        features_list = [1]  # Feature inicial beta_0
+        
+        # 3. Feature de tiempo restante |1| +|1|
+        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
+        features_list.append(tiempo_norm)
+        features_list.append(tiempo_norm**2)  # Feature cuadrático del tiempo restante
+
+
+        # 4. Features de inventario promedio por cliente-producto |N||P| y agregamos el cuadratico |N||P|*2
+        ratio_inventario_clientes_productos = {}
+        for idc in self.instancia.id_clientes:
+            cliente = clientes[idc]
+            ratio_inventario_clientes_productos[idc] = {}
+            for idp in productos:
+                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
+                features_list.append(ratio)
+                #features_list.append(ratio**2)  # Agregar cuadrático
+                ratio_inventario_clientes_productos[idc][idp] = ratio
+        
+
+
+
+        # 5. Features de depot por vehículo-producto  |M||P|
+        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
+        for idv in self.instancia.id_vehiculos:
+            for idp in productos:
+                if not planificacion_post[idv]:
+                    features_list.append(0.0)
+                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
+                    features_list.append(1.0)
+                else:
+                    features_list.append(0.0)
+        
+
+
+        # 6. Features combinados: entrega base + distancia  |N||P|4|
+        # Para almacenar las features de entregas por cliente-producto
+        feature_entregas = {}
+        for idc in self.instancia.id_clientes:
+            xc, yc = pos_clientes[idc]
+            capacidad = clientes[idc].capacidad_almacenamiento
+            feature_entregas[idc] = {}  # Inicializar lista de features para el cliente
+            
+            for idp in productos:
+                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_actual >= 0.2:  # debe ser si es menor que 0.2
+                    # Agregar 4 ceros si no cumple el ratio
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([0.0, 0.0 ,  0.0, 0.0, 0.0])
+                    continue
+                    
+                # Calcular ratio base y vehículo asignado
+                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
+                ratio_base = ratio_peso / capacidad  # Feature base sin distancia
+                
+                if idv is None or idv not in vehiculos:
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([0.0, 0.0, 0.0, 0.0, 0.0]) # antes era ratio base al principio
+                    continue
+                    
+                # Calcular distancia una sola vez
+                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
+                distancia = ((xc - xv)**2 + (yc - yv)**2)**0.5
+                
+                # Features de distancia
+                f_300 = ratio_base if distancia <= 500 else 0.0
+                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
+                f_1500 = ratio_base if 1000 < distancia else 0.0
+
+                feature_entregas[idc][idp] = [ratio_base, ratio_base**2, f_300, f_1000, f_1500]         
+                features_list.extend([ratio_base, ratio_base**2, f_300, f_1000, f_1500])
+
+        
+        # Agregamos el feature de entrega por cliente-producto pero multiplicado por el ratio de inventario de cliente por producto
+        for idc in self.instancia.clientes:
+            for idp in self.instancia.productos:
+                ratio_inventario = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_inventario < 0.2:
+                    # Multiplicar las features de entrega por el ratio de inventario del cliente-producto
+                    features_list.append(feature_entregas[idc][idp][0] * ratio_inventario)
+                else:
+                    # Si el ratio es mayor o igual a 0.2, agregar 4 ceros
+                    features_list.append(0.0)
+        
+
+        # Convertir a array numpy una sola vez
+        return np.array(features_list, dtype=np.float32)
+    '''
+
+    def obtener_features(self, estado, accion):
+        """
+        Obtiene los features de un estado y acción dados, y aplica
+        transformación de Fourier a todos los features excepto beta_0.
+        
+        Devuelve un vector NumPy listo para el modelo lineal.
+        """
+        clientes = self.instancia.clientes
+        productos = self.instancia.productos
+        vehiculos = estado.posiciones_vehiculos
+
+        # Copiar el estado y aplicar la acción
+        estado_copia = copy.deepcopy(estado)
+        self.proceso.actualizar_planificacion(estado_copia, accion)
+        planificacion_post = estado_copia.planificacion
+
+        pos_clientes = {
+            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
+            for idc in self.instancia.id_clientes
+        }
+
+        # Inicializar lista con intercepto
+        features_list = [1.0]  # beta_0
+
+        # Feature: tiempo restante normalizado
+        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
+        features_list.append(tiempo_norm)
+
+        # Features: inventario promedio por cliente-producto
+        ratio_inventario_clientes_productos = {}
+        for idc in self.instancia.id_clientes:
+            cliente = clientes[idc]
+            ratio_inventario_clientes_productos[idc] = {}
+            for idp in productos:
+                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
+                features_list.append(ratio)
+                ratio_inventario_clientes_productos[idc][idp] = ratio
+
+        # Features: depot por vehículo-producto
+        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
+        for idv in self.instancia.id_vehiculos:
+            for idp in productos:
+                if not planificacion_post[idv]:
+                    features_list.append(0.0)
+                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
+                    features_list.append(1.0)
+                else:
+                    features_list.append(0.0)
+
+        # Features: entregas y distancias
+        feature_entregas = {}
+        for idc in self.instancia.id_clientes:
+            xc, yc = pos_clientes[idc]
+            capacidad = clientes[idc].capacidad_almacenamiento
+            feature_entregas[idc] = {}
+
+            for idp in productos:
+                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_actual >= 0.2:
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([0.0, 0.0, 0.0, 0.0])
+                    continue
+
+                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
+                ratio_base = ratio_peso / capacidad
+
+                if idv is None or idv not in vehiculos:
+                    feature_entregas[idc][idp] = [ratio_base, 0.0, 0.0, 0.0]
+                    features_list.extend([ratio_base, 0.0, 0.0, 0.0])
+                    continue
+
+                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
+                distancia = np.hypot(xc - xv, yc - yv)
+
+                f_300 = ratio_base if distancia <= 500 else 0.0
+                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
+                f_1500 = ratio_base if distancia > 1000 else 0.0
+
+                feature_entregas[idc][idp] = [ratio_base, f_300, f_1000, f_1500]
+                features_list.extend([ratio_base, f_300, f_1000, f_1500])
+
+        # Convertir a array numpy una sola vez
+        return np.array(features_list, dtype=np.float32)
+
+
+
+
+    def calcular_peso_por_cliente_producto(self, accion, id_cliente, id_producto):
+        '''
+        Descripción:
+        Método que calcula el peso de entrega de un cliente en relación a un producto
+        Args:
+            * accion: Diccionario con la planificación de todos los vehículos
+            * id_cliente: ID del cliente
+            * id_producto: ID del producto
+        Return:
+            * peso_entrega: Peso de entrega del cliente en relación al producto
+            * id_vehículo: ID del vehículo que tiene la entrega hacia ese cliente
+        '''
+        total_peso = 0.
+        idv = None
+        for id_vehículo , vehiculo in accion.items():
+            # Verificar si el vehículo tiene acción
+            if not vehiculo:
+                continue  # Saltar vehículos inactivos
+            # Obtener destino y productos (seguro porque vehiculo no está vacío)
+            id_destino, productos = next(iter(vehiculo.items()))
+            if id_destino == id_cliente:
+                idv = id_vehículo
+                for idp, cantidad in productos.items():
+                    if idp == id_producto:
+                        total_peso += cantidad * self.instancia.productos[id_producto].peso
+        return total_peso, idv
+
+    def calcular_ratios_utilizacion_vehiculos(self, estado: Estado):
+        """
+        Calcula el ratio de utilización (peso actual vs capacidad) para cada vehículo.
+        
+        Args:
+            estado: Objeto Estado
+        
+        Returns:
+            dict: Diccionario con {id_vehiculo: {id_producto : ratio_utilizacion} }
+                Ratio entre 0.0 (vacío) y 1.0+ (sobrecargado)
+        """
+        ratios = {}
+        
+        for id_vehiculo, inventario in estado.inventarios_vehiculos.items():
+            try:
+                # 1. Obtener capacidad del vehículo
+                vehiculo = self.instancia.vehiculos[id_vehiculo]
+                capacidad = vehiculo.capacidad
+                ratios[id_vehiculo] = {}
+                for id_producto, cantidad in inventario.items():
+                    producto = self.instancia.productos[id_producto]
+                    ratios[id_vehiculo][id_producto] = round(cantidad * producto.peso / capacidad, 2)
+            except KeyError as e:
+                # Manejar vehículos o productos no existentes
+                print(f"Advertencia: {e} no encontrado. Vehículo {id_vehiculo} omitido")
+                ratio = 0.0
+        return ratios
+
+
+class MonteCarlo(Modelos_de_aproximacion):
+    ''' Objeto que implementará la política MC Onpolicy al problema'''
+
+    def __init__(self, instancia, proceso, episodios, epsilon, learning_rate):
+        super().__init__(instancia, proceso,episodios, epsilon, learning_rate)
         self.betas = None
         self.mejores_betas = np.array([])
         self.optimo_mejor_betas = np.array([])
         self.registro_optimos_mejores_betas = np.array([])
         self.registro_optimos = np.array([])
-        self.crear_betas()
-        self.inicializar_mejores_betas()
 
     def inicializar_mejores_betas(self):
         '''
@@ -722,15 +1000,17 @@ class MonteCarlo(PoliticasSimples):
         '''
         Crea un vector de parámetros beta que coincide exactamente con la estructura de features.
         '''
-        betas = [0.0]  # Beta para el término constante (feature inicial)
+        betas = [0]  # Beta para el término constante (feature inicial)
         
-        # Beta para el feature de tiempo restante (1 beta)
+        # Beta para el feature de tiempo restante (1 beta) +1 
         betas.append(0.0)
+        #betas.append(0.0) ## extra
         
-        # Betas para inventario por cliente-producto (|N| * |P| betas)
+        # Betas para inventario por cliente-producto (|N| * |P| betas) + el cuadrado
         for _ in self.instancia.id_clientes:
             for _ in self.instancia.id_productos:
                 betas.append(0.0)
+                #betas.append(0.0)
         
         
         # Betas para vehículo-producto (|M| * |P| betas)
@@ -742,100 +1022,15 @@ class MonteCarlo(PoliticasSimples):
         for _ in self.instancia.id_clientes:
             for _ in self.instancia.id_productos:
                 # 4 betas: [base, <300, <1000, >=1500]
-                betas.extend([0.0, 0.0, 0.0, 0.0])
-        
+                betas.extend([0.0, 0.0, 0.0, 0.0]) # uno extra
+        '''
+        # creamos los betas asociados a la entrega por cliente-producto multiplicado por el ratio de inventario del cliente-producto |N||P|
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                betas.append(0.0)
+        '''
+        self.numero_de_features = len(betas) # obtenemos el numero de features
         self.betas = np.array(betas, dtype=np.float32)
-
-    def obtener_features(self, estado, accion):
-        '''        
-        Descripción:
-        Método que obtiene los features de un estado dado
-        Args:
-            * estado: Objeto Estado
-            * accion: Diccionario con la acción a aplicar
-        Return:
-            * features: Lista con los features del estado
-        '''        
-
-        # Precomputar estructuras necesarias
-        clientes = self.instancia.clientes
-        productos = self.instancia.productos
-        vehiculos = estado.posiciones_vehiculos
-        
-                #creamos copia del estado
-        estado_copia = copy.copy(estado)
-        # aplicamos la acción
-        self.proceso.actualizar_planificacion(estado_copia, accion)
-        planificacion_post = estado_copia.planificacion
-
-        # 1. Precalcular posiciones y capacidades
-        pos_clientes = {
-            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
-            for idc in self.instancia.id_clientes
-        }
-        
-        # 2. Inicializar lista de features (eficiente para append) |1|
-        features_list = [1.0]  # Feature inicial
-        
-        # 3. Feature de tiempo restante |1|
-        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
-        features_list.append(tiempo_norm)
-        
-        # 4. Features de inventario promedio por cliente-producto |N||P|
-        ratio_inventario_clientes_productos = {}
-        for idc in self.instancia.id_clientes:
-            cliente = clientes[idc]
-            ratio_inventario_clientes_productos[idc] = {}
-            for idp in productos:
-                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
-                features_list.append(ratio)
-                ratio_inventario_clientes_productos[idc][idp] = ratio
-        
-
-        # 6. Features de depot por vehículo-producto  |M||P|
-        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
-        for idv in self.instancia.id_vehiculos:
-            for idp in productos:
-                if not planificacion_post[idv]:
-                    features_list.append(0.0)
-                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
-                    features_list.append(1.0)
-                else:
-                    features_list.append(0.0)
-        
-        # 3. Features combinados: entrega base + distancia  |N||P|4|
-        for idc in self.instancia.id_clientes:
-            xc, yc = pos_clientes[idc]
-            capacidad = clientes[idc].capacidad_almacenamiento
-            
-            for idp in productos:
-                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
-                if ratio_actual >= 0.2:
-                    # Agregar 4 ceros si no cumple el ratio
-                    features_list.extend([0.0, 0.0, 0.0, 0.0])
-                    continue
-                    
-                # Calcular ratio base y vehículo asignado
-                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
-                ratio_base = ratio_peso / capacidad  # Feature base sin distancia
-                
-                if idv is None or idv not in vehiculos:
-                    features_list.extend([ratio_base, 0.0, 0.0, 0.0])
-                    continue
-                    
-                # Calcular distancia una sola vez
-                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
-                distancia = ((xc - xv)**2 + (yc - yv)**2)**0.5
-                
-                # Features de distancia
-                f_300 = ratio_base if distancia <= 500 else 0.0
-                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
-                f_1500 = ratio_base if 1000 < distancia else 0.0
-                
-                features_list.extend([ratio_base, f_300, f_1000, f_1500])
-        
-        # Convertir a array numpy una sola vez
-        return np.array(features_list, dtype=np.float32)
 
     def ejecutar_politica_epsilon_greedy(self):
         '''Ejecuta un episodio con política epsilon-greedy optimizada.'''
@@ -870,8 +1065,11 @@ class MonteCarlo(PoliticasSimples):
 
     def entrenar_modelo(self):
         ''' Método que ejecuta el algoritmo MC OnPolicy'''
+        self.crear_betas()
+        self.inicializar_mejores_betas()
         for episodio in range(self.episodios):
             trayectoria = self.ejecutar_politica_epsilon_greedy()
+
             # implementamos la política epsilon greedy
             G = 0
             for t in reversed(trayectoria):
@@ -879,11 +1077,15 @@ class MonteCarlo(PoliticasSimples):
                 # Actualizamos los pesos
                 x = t['features']
                 # Ahora obtenemos el c(st,at)
-                c_st_at = self.proceso.determinar_c_st_at(t['estado'], t['accion'])
-                self.SGD(x, G, c_st_at)
+                #c_st_at = self.proceso.determinar_c_st_at(t['estado'], t['accion'])
+                self.SGD(x, G)# ,c_st_at)
             
             if episodio % 100 == 0:
                 self.actualizar_mejores_betas()
+
+            #if episodio == 100:
+             #   self.epsilon = self.epsilon_final
+              #  self.learning_rate = self.learning_rate_final
 
     def probar_politica_optima_MC(self):
         ''' 
@@ -910,7 +1112,7 @@ class MonteCarlo(PoliticasSimples):
                 estado = nuevo_estado 
         return trayectoria, costo_traslado
 
-    def SGD(self,x,y, c):
+    def SGD(self,x,y):#, c):
             '''
             Descripción:
             *   Método que aplica SGD, recibe un array x y actualiza los pesos originados self.betas
@@ -920,7 +1122,7 @@ class MonteCarlo(PoliticasSimples):
             *   c: costo fijo del estado acción
             '''
             # Predicción y error
-            prediccion = np.dot(x, self.betas) + c
+            prediccion = np.dot(x, self.betas) #+ c
             error = prediccion - y  # o (y - prediction) dependiendo de la convención
             # Gradiente (para una muestra)
             gradients = x * error  # Si x es un vector 1D
@@ -939,7 +1141,7 @@ class MonteCarlo(PoliticasSimples):
         '''
         numero = np.random.random()
         acciones = self.obtener_acciones(estado)
-        if numero < self.epsilon:
+        if numero < self.epsilon: #or self.n_episodio < 100:
             accion = np.random.choice(acciones)
         else:
             accion = self.politica_optima(estado, acciones)
@@ -982,12 +1184,12 @@ class MonteCarlo(PoliticasSimples):
             '''
             #lista de tuplas
             mejor_Q = np.inf
-            mejor_accion = np.random.choice(acciones)
+            mejor_accion = None
             for action in acciones: 
                 x = self.obtener_features(state, action) # Lista de features
                 # obtenemos el c(st,at)
-                c_st_at = self.proceso.determinar_c_st_at(state, action)
-                Q = np.dot(x, self.mejores_betas) + c_st_at # Predicción FALTA SUMAR C(St,At)
+                #c_st_at = self.proceso.determinar_c_st_at(state, action)
+                Q = np.dot(x, self.mejores_betas) # + c_st_at 
                 if Q < mejor_Q:
                     mejor_Q = Q
                     mejor_accion = action
@@ -1003,75 +1205,20 @@ class MonteCarlo(PoliticasSimples):
             Return:
             *   action: Mejor acción
             '''
-            #lista de tuplas
-            mejor_Q = np.inf
-            mejor_accion = np.random.choice(acciones)
-            for action in acciones: 
-                x = self.obtener_features(state, action) # Lista de features
-                # obtenemos el c(st,at)
-                c_st_at = self.proceso.determinar_c_st_at(state, action)
-                Q = np.dot(x, self.betas) + c_st_at # Predicción FALTA SUMAR C(St,At)
-                if Q < mejor_Q:
-                    mejor_Q = Q
-                    mejor_accion = action
-            return mejor_accion
 
-    def calcular_peso_por_cliente_producto(self, accion, id_cliente, id_producto):
-        '''
-        Descripción:
-        Método que calcula el peso de entrega de un cliente en relación a un producto
-        Args:
-            * accion: Diccionario con la planificación de todos los vehículos
-            * id_cliente: ID del cliente
-            * id_producto: ID del producto
-        Return:
-            * peso_entrega: Peso de entrega del cliente en relación al producto
-            * id_vehículo: ID del vehículo que tiene la entrega hacia ese cliente
-        '''
-        total_peso = 0.
-        idv = None
-        for id_vehículo , vehiculo in accion.items():
-            # Verificar si el vehículo tiene acción
-            if not vehiculo:
-                continue  # Saltar vehículos inactivos
-            # Obtener destino y productos (seguro porque vehiculo no está vacío)
-            id_destino, productos = next(iter(vehiculo.items()))
-            if id_destino == id_cliente:
-                idv = id_vehículo
-                for idp, cantidad in productos.items():
-                    if idp == id_producto:
-                        total_peso += cantidad * self.instancia.productos[id_producto].peso
-        return total_peso, idv
+            qs = []
+            for action in acciones:
+                features = self.obtener_features(state, action)
+                #costo = self.proceso.determinar_c_st_at(state, action)
+                Q = np.dot(features, self.betas) #+ costo
+                qs.append((Q, action))
 
-    def calcular_ratios_utilizacion_vehiculos(self, estado: Estado):
-        """
-        Calcula el ratio de utilización (peso actual vs capacidad) para cada vehículo.
-        
-        Args:
-            estado: Objeto Estado
-        
-        Returns:
-            dict: Diccionario con {id_vehiculo: {id_producto : ratio_utilizacion} }
-                Ratio entre 0.0 (vacío) y 1.0+ (sobrecargado)
-        """
-        ratios = {}
-        
-        for id_vehiculo, inventario in estado.inventarios_vehiculos.items():
-            try:
-                # 1. Obtener capacidad del vehículo
-                vehiculo = self.instancia.vehiculos[id_vehiculo]
-                capacidad = vehiculo.capacidad
-                ratios[id_vehiculo] = {}
-                for id_producto, cantidad in inventario.items():
-                    producto = self.instancia.productos[id_producto]
-                    ratios[id_vehiculo][id_producto] = round(cantidad * producto.peso / capacidad, 2)
-            except KeyError as e:
-                # Manejar vehículos o productos no existentes
-                print(f"Advertencia: {e} no encontrado. Vehículo {id_vehiculo} omitido")
-                ratio = 0.0
-        return ratios
+            # Elegir la acción con el menor Q
+            return min(qs, key=lambda x: x[0])[1]
 
-class MonteCarloRN(MonteCarlo):
+
+
+class MonteCarloRN(Modelos_de_aproximacion):
     '''
     Clase que implementa la política MC Onpolicy utilizando redes neuronales. Hereda todo de la clase padre
     '''
@@ -1082,7 +1229,614 @@ class MonteCarloRN(MonteCarlo):
         self.optimo_mejor_betas = np.array([])
         self.registro_optimos_mejores_betas = np.array([])
         self.registro_optimos = np.array([])
-        #self.red_neuronal = tf.keras.Sequential([tf.keras.layers.Dense(10, activation='relu', input_shape=(4,)), tf.keras.layers.Dense(8, activation='relu'), tf.keras.layers.Dense(1)])
-        self.red_neuronal.compile(optimizer='adam', loss='mse')
+        self.numero_de_features = None
+        self.red_neuronal = None
+        self.determinar_numero_de_features()
+        self.inicializar_red_neuronal()
+
+    def determinar_numero_de_features(self):
+        '''
+        Método que determina el número de features a utilizar en la red neuronal
+        '''
+
+        numero_features = 2 # parte con 2, el bo y el tiempo restante
+        
+        # Betas para inventario por cliente-producto (|N| * |P| betas)
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                numero_features += 1
+        
+        # Betas para vehículo-producto (|M| * |P| betas)
+        for _ in self.instancia.id_vehiculos:
+            for _ in self.instancia.id_productos:
+                numero_features += 1
+        
+        # Betas para entrega con distancia (4 betas por cliente-producto: base + 3 umbrales)
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                # 4 betas: [base, <300, <1000, >=1500]
+                numero_features += 4 #uno por cada distancia
+        
+        self.numero_de_features = numero_features
+
+    def inicializar_red_neuronal(self):
+        '''
+        Inicializa la red neuronal con pesos aleatorios (sin entrenamiento previo)
+        '''
+        # 1. Definir arquitectura
+        #self.red_neuronal = tf.keras.Sequential([
+            #tf.keras.Input(shape=(self.numero_de_features,)), 
+            #tf.keras.layers.Dense(64, activation='relu'),
+            #tf.keras.layers.Dense(64, activation='relu'),
+            #tf.keras.layers.Dense(64, activation='relu'),
+            #tf.keras.layers.Dense(1)
+        #])
+        
+        # 2. Compilar (sin entrenar aún)
+        #self.red_neuronal.compile(
+         #   optimizer=tf.keras.optimizers.Adam(),
+          #  loss='mse'
+        #)
+
+    def entrenar_modelo(self):
+        ''' Método que ejecuta el algoritmo MC OnPolicy'''
+        for episodio in range(self.episodios):
+            trayectoria = self.ejecutar_politica_epsilon_greedy()
+            # implementamos la política epsilon greedy
+            G = 0
+            features = []
+            retornos = []
+            for t in reversed(trayectoria):
+                G = G  +  t['recompensa']
+                # Ahora obtenemos el c(st,at)
+                c_st_at = self.proceso.determinar_c_st_at(t['estado'], t['accion'])
+                # almacenamos los features que se obtuvieron en cada paso
+                features.append(t['features'])
+                retornos.append(G + c_st_at)
+
+            # Convertir a arrays y reordenar
+            features_array = np.array(features[::-1])  # recuperar orden original
+            retornos_array = np.array(retornos[::-1]).reshape(-1, 1)
+
+
+            self.red_neuronal.fit(
+                features_array, 
+                retornos_array, 
+                epochs=1, 
+                batch_size=32,
+                verbose=0
+)
+
+            #if episodio % 100 == 0:
+            #    self.actualizar_mejores_betas()
+
+    def ejecutar_politica_epsilon_greedy(self):
+        '''Ejecuta un episodio con política epsilon-greedy optimizada.'''
+        proceso = self.proceso  # Cachear para acceso rápido
+        es_terminal = self.es_terminal  # Evitar búsquedas de atributo
+        trayectoria = []
+        
+        estado = proceso.determinar_estado_inicial()
+        while True:
+            # Paso 1: Tomar acción y obtener features
+            accion = self.tomar_accion_epsilon_greedy(estado)
+            features = self.obtener_features(estado, accion)
+            
+            # Paso 2: Transición de estado (ignoramos variables no usadas)
+            nuevo_estado, recompensa, *_ = proceso.transicion(estado, accion)
+            
+            # Paso 3: Almacenar datos (usamos tupla para menor overhead)
+            trayectoria.append( (estado, accion, features, recompensa) )
+            
+            # Paso 4: Verificar condición de término
+            if es_terminal(nuevo_estado):  # ¡Clave! Verificar nuevo_estado
+                break
+                
+            estado = nuevo_estado
+            
+        return [{
+            'estado': s,
+            'accion': a,
+            'features': f,
+            'recompensa': r
+        } for s, a, f, r in trayectoria]
+
+    def tomar_accion_epsilon_greedy(self, estado):
+        ''' 
+        Descripción:
+        Método que toma una acción utilizando la política MC OnPolicy en un estado dado
+
+        Args:
+            * estado: Objeto Estado
+        Return:
+            * accion: Acción a tomar
+        '''
+        numero = np.random.random()
+        acciones = self.obtener_acciones(estado)
+        if numero < self.epsilon:
+            accion = np.random.choice(acciones)
+        else:
+            accion = self.politica_optima(estado, acciones)
+        return accion
+
+    def politica_optima(self, state, acciones):
+        '''
+        Descripción:
+        *   Devuelve la mejor acción para un estado usando la red neuronal + costo c(s,a)
+
+        Parámetros:
+        *   state: estado actual
+        *   acciones: lista de acciones posibles
+
+        Return:
+        *   mejor_accion: acción con menor Q(s,a)
+        '''
+        mejor_Q = np.inf
+        mejor_accion = np.random.choice(acciones)  # por si todas las acciones tienen el mismo Q
+        for action in acciones:
+            x = self.obtener_features(state, action)  # vector de features
+            x = np.expand_dims(x, axis=0)             # formato (1, n_features)
+            
+            q_estimado = self.red_neuronal.predict(x, verbose=0)[0][0]
+            c_st_at = self.proceso.determinar_c_st_at(state, action)
+            
+            Q = q_estimado + c_st_at  # valor total estimado
+            if Q < mejor_Q:
+                mejor_Q = Q
+                mejor_accion = action
+## agregar que se obtengan todas las predicciones antes de comparar
+        return mejor_accion
+    
+    def ejecutar_politica_RedNeuronal(self):
+        '''
+        Descripción:
+        Método que ejecuta un episodio siguiendo la mejor acción con los mejores betas encontrados en el entrenamiento
+        Args:
+            * None
+        Return:
+            * trayectoria: Diccionario con el detalle de lo que hizo durante la simulación
+        '''
+        # Comenzamos en el estado inicial
+        estado = self.proceso.determinar_estado_inicial()
+        trayectoria = []
+        costo_traslado = 0
+        while True:
+            acciones = self.obtener_acciones(estado)
+            accion = self.politica_optima(estado, acciones)
+            nuevo_estado, recompensa,traslado,_ = self.proceso.transicion(estado,accion)
+            trayectoria.append({'estado': estado, 'accion': accion, 'recompensa': recompensa})
+            costo_traslado += traslado
+            if self.es_terminal(estado):
+                break
+            else:
+                estado = nuevo_estado 
+        return trayectoria, costo_traslado
+
+class Qlearning(MonteCarlo):
+    '''
+    Clase que implementa la política Q-learning con aproximación de función lineal. Hereda todo de la clase padre MonteCarlo
+    Pero agrega la función de aproximación de Q-learning
+    '''
+
+    def __init__(self, instancia, proceso, episodios, gamma, epsilon, learning_rate):
+        '''
+        Descripción:
+        *   Constructor de la clase Qlearning
+        Parámetros:
+        *   instancia: Objeto que contiene todos los elementos de la simulación
+        *   proceso: Objeto que contiene el proceso de simulación
+        *   episodios: Número de episodios a realizar
+        *   gamma: Factor de descuento
+        *   epsilon: Factor de epsilon greedy
+        *   learning_rate: Factor de aprendizaje
+        '''
+        super().__init__(instancia, proceso, episodios, epsilon, learning_rate)
+        self.gamma = gamma
+        self.buffer = deque(maxlen=10_000)  # tamaño máximo del buffer
+        self.batch_size = 64  # tamaño del minibatch para entrenar
+    
+    def entrenar_modelo(self):
+        ''' Método que ejecuta el algoritmo Q-learning sobreescribiendo el de la clase padre MonteCarlo'''
         self.crear_betas()
         self.inicializar_mejores_betas()
+        proceso = self.proceso 
+        es_terminal = self.es_terminal
+        trayectoria = []
+        
+        for episodio in range(self.episodios):
+            # Inicializamos el estado actual con un objeto Estado()
+            estado = proceso.determinar_estado_inicial() 
+            while True:
+                # Tomar acción y obtener features
+                accion = self.tomar_accion_epsilon_greedy(estado) #diccionario
+                features = self.obtener_features(estado, accion) # np.array()
+                
+                # Transición de estado y almacenamos lo relevante
+                nuevo_estado, recompensa, *_ = proceso.transicion(estado, accion)
+                
+                # obtenemos la mejor acción en el nuevo estado
+                mejor_accion_nuevo_estado = self.politica_optima(nuevo_estado, self.obtener_acciones(nuevo_estado))
+
+                # obtenemos las features del nuevo estado-acción
+                features_nuevo_estado = self.obtener_features(nuevo_estado, mejor_accion_nuevo_estado)
+
+                # obtenemos el Q valor del nuevo estado-acción
+                nuevo_Q = np.dot(features_nuevo_estado, self.betas)
+                #nuevo_c_s_at = self.proceso.determinar_c_st_at(nuevo_estado, mejor_accion_nuevo_estado)
+
+                # Calcular G (recompensa + gamma * Q(nuevo_estado, mejor_accion_nuevo_estado))
+                G = recompensa + self.gamma * nuevo_Q  #nuevo_c_s_at)
+
+                # determinamos el c(st,at)
+                #c_st_at = self.proceso.determinar_c_st_at(estado, accion)
+
+                # Actualizar betas usando SGD
+                self.SGD(features, G)#, c_st_at)
+
+                # Almacenar datos (usamos tupla para menor overhead)
+                trayectoria.append((estado, accion, features, recompensa) )
+                
+                # Verificar condición de término
+                if es_terminal(nuevo_estado):
+                    break
+                    
+                estado = nuevo_estado
+                
+            if episodio % 100 == 0:
+                self.actualizar_mejores_betas()
+            
+    def entrenar_modelo_buffer(self):
+        '''Método que alimenta el buffer'''
+        for episodio in range(self.episodios):
+            estado = self.proceso.determinar_estado_inicial() 
+            while True:
+                accion = self.tomar_accion_epsilon_greedy(estado)
+                features = self.obtener_features(estado, accion)
+                nuevo_estado, recompensa, *_ = self.proceso.transicion(estado, accion)
+                terminado = self.es_terminal(nuevo_estado)
+
+                self.buffer.append((estado, accion, features, recompensa, nuevo_estado, terminado))
+
+
+                if terminado:
+                    break
+
+                estado = nuevo_estado
+            
+            if episodio % 100 == 0:
+                self.entrenar_con_batch()
+                self.actualizar_mejores_betas()
+
+    def entrenar_con_batch(self):
+        '''Método que elige un conjunto de entradas random para entrenar el modelo de Q_learning'''
+        batch = random.sample(self.buffer, self.batch_size)
+
+        for estado, accion, features, recompensa, nuevo_estado, terminado in batch:
+            # Política óptima para el nuevo estado
+            mejor_accion_nuevo = self.politica_optima(nuevo_estado, self.obtener_acciones(nuevo_estado))
+            features_nuevo = self.obtener_features(nuevo_estado, mejor_accion_nuevo)
+            Q_nuevo = np.dot(features_nuevo, self.betas)
+
+            c_nuevo = self.proceso.determinar_c_st_at(nuevo_estado, mejor_accion_nuevo)
+            c_actual = self.proceso.determinar_c_st_at(estado, accion)
+
+            if terminado:
+                G = recompensa
+            else:
+                G = recompensa + self.gamma * (Q_nuevo + c_nuevo)
+
+            # SGD con las features del estado actual
+            self.SGD(features, G, c_actual)
+
+class MonteCarlo_Fourier(MonteCarlo):
+    def __init__(self, instancia, proceso, episodios, epsilon, learning_rate, max_i):
+        super().__init__(instancia, proceso, episodios, epsilon, learning_rate)
+        self.max_i = max_i
+
+    def crear_betas(self):
+        '''
+        Crea un vector de parámetros beta que coincide exactamente con la estructura de features.
+        '''
+        betas = [0]  # Beta para el término constante (feature inicial)
+        
+        # Beta para el feature de tiempo restante (1 beta)
+        betas.append(0.0)
+        
+        # Betas para inventario por cliente-producto (|N| * |P| betas) + el cuadrado
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                betas.append(0.0)
+                #betas.append(0.0)
+        
+        
+        # Betas para vehículo-producto (|M| * |P| betas)
+        for _ in self.instancia.id_vehiculos:
+            for _ in self.instancia.id_productos:
+                betas.append(0.0)
+        
+        # Betas para entrega con distancia (4 betas por cliente-producto: base + 3 umbrales)
+        for _ in self.instancia.id_clientes:
+            for _ in self.instancia.id_productos:
+                # 4 betas: [base, <300, <1000, >=1500]
+                betas.extend([0.0, 0.0, 0.0, 0.0])
+
+        # creamos los betas asociados a la entrega por cliente-producto multiplicado por el ratio de inventario del cliente-producto |N||P|
+        #for _ in self.instancia.id_clientes:
+         #   for _ in self.instancia.id_productos:
+          #      betas.append(0.0)
+
+        self.numero_de_features = len(betas) # obtenemos el numero de features
+        self.betas = np.array(betas, dtype=np.float32)
+
+    def aumentar_betas(self, num_features_originales, componentes_por_feature):
+        """
+        Descripción: 
+            Devuelve una lista de betas iniciales (todos ceros),
+            considerando el intercepto beta0.
+        Args:
+            num_features_originales: Int que dice el número de features que hay (incluye intercepto)
+            componentes_por_feature: Int, número de componentes que se harán por features ( numero de índices * 2)
+        """
+        num_features_reales = num_features_originales - 1  # No contamos intercepto para expandir
+        num_features_nuevos = num_features_reales * componentes_por_feature
+        total_betas = 1 + num_features_nuevos  # 1 para intercepto
+
+        return np.array([0] * total_betas, dtype=np.float32)
+
+    def entrenar_modelo(self):
+        ''' Método que ejecuta el algoritmo MC OnPolicy'''
+        self.crear_betas()
+        self.betas = self.aumentar_betas(num_features_originales= self.numero_de_features, componentes_por_feature= self.max_i * 2)
+        self.inicializar_mejores_betas()
+        for episodio in range(self.episodios):
+            trayectoria = self.ejecutar_politica_epsilon_greedy()
+            # sumamos el contador de episodios
+            self.n_episodio += 1
+            # implementamos la política epsilon greedy
+            G = 0
+            for t in reversed(trayectoria):
+                G = G  +  t['recompensa']
+                # Actualizamos los pesos
+                x = t['features']
+                # Ahora obtenemos el c(st,at)
+                #c_st_at = self.proceso.determinar_c_st_at(t['estado'], t['accion'])
+                self.SGD(x, G)#, c_st_at)
+            
+            if episodio % 100 == 0:
+                self.actualizar_mejores_betas()
+
+        # optimizado
+
+
+    # optimizado
+    def obtener_features(self, estado, accion):
+        """
+        Obtiene los features de un estado y acción dados, y aplica
+        transformación de Fourier a todos los features excepto beta_0.
+        
+        Devuelve un vector NumPy listo para el modelo lineal.
+        """
+        clientes = self.instancia.clientes
+        productos = self.instancia.productos
+        vehiculos = estado.posiciones_vehiculos
+
+        # Copiar el estado y aplicar la acción
+        estado_copia = copy.deepcopy(estado)
+        self.proceso.actualizar_planificacion(estado_copia, accion)
+        planificacion_post = estado_copia.planificacion
+
+        pos_clientes = {
+            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
+            for idc in self.instancia.id_clientes
+        }
+
+        # Inicializar lista con intercepto
+        features_list = [1.0]  # beta_0
+
+        # Feature: tiempo restante normalizado
+        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
+        features_list.append(tiempo_norm)
+
+        # Features: inventario promedio por cliente-producto
+        ratio_inventario_clientes_productos = {}
+        for idc in self.instancia.id_clientes:
+            cliente = clientes[idc]
+            ratio_inventario_clientes_productos[idc] = {}
+            for idp in productos:
+                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
+                features_list.append(ratio)
+                ratio_inventario_clientes_productos[idc][idp] = ratio
+
+        # Features: depot por vehículo-producto
+        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
+        for idv in self.instancia.id_vehiculos:
+            for idp in productos:
+                if not planificacion_post[idv]:
+                    features_list.append(0.0)
+                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
+                    features_list.append(1.0)
+                else:
+                    features_list.append(0.0)
+
+        # Features: entregas y distancias
+        feature_entregas = {}
+        for idc in self.instancia.id_clientes:
+            xc, yc = pos_clientes[idc]
+            capacidad = clientes[idc].capacidad_almacenamiento
+            feature_entregas[idc] = {}
+
+            for idp in productos:
+                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_actual >= 0.2:
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([0.0, 0.0, 0.0, 0.0])
+                    continue
+
+                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
+                ratio_base = ratio_peso / capacidad
+
+                if idv is None or idv not in vehiculos:
+                    feature_entregas[idc][idp] = [ratio_base, 0.0, 0.0, 0.0]
+                    features_list.extend([ratio_base, 0.0, 0.0, 0.0])
+                    continue
+
+                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
+                distancia = np.hypot(xc - xv, yc - yv)
+
+                f_300 = ratio_base if distancia <= 500 else 0.0
+                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
+                f_1500 = ratio_base if distancia > 1000 else 0.0
+
+                feature_entregas[idc][idp] = [ratio_base, f_300, f_1000, f_1500]
+                features_list.extend([ratio_base, f_300, f_1000, f_1500])
+
+        # Feature: entregas multiplicadas por inventario
+        #for idc in self.instancia.clientes:
+         #   for idp in self.instancia.productos:
+          #      ratio_inventario = ratio_inventario_clientes_productos[idc][idp]
+           #     if ratio_inventario < 0.2:
+            #        features_list.append(feature_entregas[idc][idp][0] * ratio_inventario)
+             #   else:
+              #      features_list.append(0.0)
+
+        # Convertir lista a NumPy
+        features_array = np.array(features_list, dtype=np.float32)
+
+        # Extraer intercepto
+        intercept = features_array[0]
+        # Features "reales" (sin intercepto)
+        real_features = features_array[1:]
+
+        # Transformación de Fourier (vectorizada)
+        transformed_features = fourier_transform_features_vectorized(real_features, max_i=5)
+
+        # Concatenar intercepto con features transformados
+        final_features = np.concatenate(([intercept], transformed_features))
+
+        return final_features
+
+
+    # adaptamos el método original para incorporar fourier
+    def obtener_features2(self, estado, accion):
+        '''        
+        Descripción:
+        Método que obtiene los features de un estado dado
+        Args:
+            * estado: Objeto Estado
+            * accion: Diccionario con la acción a aplicar
+        Return:
+            * features: Lista con los features del estado
+        '''        
+
+        # Precomputar estructuras necesarias
+        clientes = self.instancia.clientes
+        productos = self.instancia.productos
+        vehiculos = estado.posiciones_vehiculos
+        
+        #creamos copia del estado
+        estado_copia = copy.copy(estado)
+        # aplicamos la acción
+        self.proceso.actualizar_planificacion(estado_copia, accion)
+        planificacion_post = estado_copia.planificacion
+
+        # 1. Precalcular posiciones y capacidades
+        pos_clientes = {
+            idc: (clientes[idc].posicion_x, clientes[idc].posicion_y)
+            for idc in self.instancia.id_clientes
+        }
+        # 2. Inicializar lista de features (eficiente para append) |1|
+        features_list = [1]  # Feature inicial beta_0
+        # 3. Feature de tiempo restante |1| +|1|
+        tiempo_norm = (self.instancia.horizonte_tiempo - estado.tiempo) / self.instancia.horizonte_tiempo
+        features_list.append(tiempo_norm)
+        #features_list.append(tiempo_norm**2)  # Feature cuadrático del tiempo restante
+        # 4. Features de inventario promedio por cliente-producto |N||P| y agregamos el cuadratico |N||P|*2
+        ratio_inventario_clientes_productos = {}
+        for idc in self.instancia.id_clientes:
+            cliente = clientes[idc]
+            ratio_inventario_clientes_productos[idc] = {}
+            for idp in productos:
+                ratio = (estado.inventarios_clientes[idc][idp] * productos[idp].peso) / cliente.capacidad_almacenamiento
+                features_list.append(ratio)
+                #features_list.append(ratio**2)  # Agregar cuadrático
+                ratio_inventario_clientes_productos[idc][idp] = ratio
+        # 5. Features de depot por vehículo-producto  |M||P|
+        ratios_utilizacion = self.calcular_ratios_utilizacion_vehiculos(estado)
+        for idv in self.instancia.id_vehiculos:
+            for idp in productos:
+                if not planificacion_post[idv]:
+                    features_list.append(0.0)
+                elif ratios_utilizacion[idv][idp] < 0.1 and next(iter(planificacion_post[idv])) == 0:
+                    features_list.append(1.0)
+                else:
+                    features_list.append(0.0)
+        # 6. Features combinados: entrega base + distancia  |N||P|4|
+        # Para almacenar las features de entregas por cliente-producto
+        feature_entregas = {}
+        for idc in self.instancia.id_clientes:
+            xc, yc = pos_clientes[idc]
+            capacidad = clientes[idc].capacidad_almacenamiento
+            feature_entregas[idc] = {}  # Inicializar lista de features para el cliente
+            
+            for idp in productos:
+                ratio_actual = ratio_inventario_clientes_productos[idc][idp]
+                if ratio_actual >= 0.2:  # debe ser si es menor que 0.2
+                    # Agregar 4 ceros si no cumple el ratio
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([0.0, 0.0, 0.0, 0.0])
+                    continue
+                    
+                # Calcular ratio base y vehículo asignado
+                ratio_peso, idv = self.calcular_peso_por_cliente_producto(planificacion_post, idc, idp)
+                ratio_base = ratio_peso / capacidad  # Feature base sin distancia
+                
+                if idv is None or idv not in vehiculos:
+                    feature_entregas[idc][idp] = [0.0, 0.0, 0.0, 0.0]
+                    features_list.extend([ratio_base, 0.0, 0.0, 0.0])
+                    continue
+                    
+                # Calcular distancia una sola vez
+                xv, yv = vehiculos[idv]['x'], vehiculos[idv]['y']
+                distancia = ((xc - xv)**2 + (yc - yv)**2)**0.5
+                
+                # Features de distancia
+                f_300 = ratio_base if distancia <= 500 else 0.0
+                f_1000 = ratio_base if 500 < distancia <= 1000 else 0.0
+                f_1500 = ratio_base if 1000 < distancia else 0.0
+
+                feature_entregas[idc][idp] = [ratio_base, f_300, f_1000, f_1500]         
+                features_list.extend([ratio_base, f_300, f_1000, f_1500])
+
+
+        # Agregamos el feature de entrega por cliente-producto pero multiplicado por el ratio de inventario de cliente por producto
+        #for idc in self.instancia.clientes:
+         #   for idp in self.instancia.productos:
+          #      ratio_inventario = ratio_inventario_clientes_productos[idc][idp]
+           #     if ratio_inventario < 0.2:
+                    # Multiplicar las features de entrega por el ratio de inventario del cliente-producto
+            #        features_list.append(feature_entregas[idc][idp][0] * ratio_inventario)
+             #   else:
+                    # Si el ratio es mayor o igual a 0.2, agregar 4 ceros
+              #      features_list.append(0.0)
+
+        features_list = self.fourier_transform_features(features = features_list, max_i = self.max_i)
+
+        return features_list    
+
+    def fourier_transform_features(self, features, max_i):
+        """
+        Recibe un vector de features con intercepto explícito en la primera posición.
+        Devuelve nuevo vector: intercepto original + features transformados por Fourier.
+        """
+        intercept = features[0]
+        original_features = features[1:]  # Excluye intercepto
+
+        transformed = []
+
+        for feature in original_features:
+            for i in range(1, max_i + 1):
+                transformed.append(np.cos(i * feature))
+                transformed.append(np.sin(i * feature))
+
+        # Resultado final: intercepto + features transformados
+        return np.concatenate(([intercept], np.array(transformed)))

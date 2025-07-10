@@ -74,7 +74,11 @@ class Proceso:
             # Primero aumentamos en una unidad el tiempo
             estado.tiempo += 1
             intervalo_de_tiempo += 1
-
+            # Si el tiempo es mayor al horizonte de tiempo, se termina el ciclo y se redirigen todos al depot
+            #if estado.tiempo >= self.instancia.horizonte_tiempo:
+             #   for idv in self.instancia.id_vehiculos:
+              #      estado.planificacion[idv] = {0: {}}                
+               # break
             # Ahora, actualizamos las posiciones de los vehiculos según la velocidad que tengan y actualizamos los inventarios de los clientes/vehiculos según la planificación
             for idv, vehiculo in self.instancia.vehiculos.items():
                 # Si el vehiculo no tiene planificación, no se actualiza nada 
@@ -116,17 +120,16 @@ class Proceso:
                                     estado.inventarios_vehiculos[idv][idp] = max(0,inventario_vehiculo_referencial)
                                     # Actualizamos los inventarios de los clientes acorde a lo que efectivamente le pudo llegar
                                     estado.inventarios_clientes[id_destino][idp] += cantidad
-                                    estado.planificacion[idv] = {}
                             else:
-                                if peso_entrega== 0:
-                                    continue
+                                #if peso_entrega== 0:
+                                #    continue
                                 # Si el peso de la entrega no se puede entregar al cliente, se entrega lo máximo posible al multiplicar por un Beta que sea como ponderador
-                                else:
-                                    beta = (self.instancia.clientes[id_destino].capacidad_almacenamiento - inventario_utilizado_cliente) / peso_entrega#sum(estado.planificacion[idv][id_destino][idp]* self.instancia.productos[idp].peso for idp in estado.planificacion[idv][id_destino]) 
-                                    for idp, cantidad in estado.planificacion[idv][id_destino].items():
-                                        inventario_vehiculo_referencial = estado.inventarios_vehiculos[idv][idp] - int(cantidad*beta)
-                                        estado.inventarios_vehiculos[idv][idp] = max(0,inventario_vehiculo_referencial)
-                                        estado.inventarios_clientes[id_destino][idp] += int(cantidad*beta)  
+                                #else:
+                                beta = (self.instancia.clientes[id_destino].capacidad_almacenamiento - inventario_utilizado_cliente) / peso_entrega#sum(estado.planificacion[idv][id_destino][idp]* self.instancia.productos[idp].peso for idp in estado.planificacion[idv][id_destino]) 
+                                for idp, cantidad in estado.planificacion[idv][id_destino].items():
+                                    inventario_vehiculo_referencial = estado.inventarios_vehiculos[idv][idp] - int(cantidad*beta)
+                                    estado.inventarios_vehiculos[idv][idp] = max(0,inventario_vehiculo_referencial)
+                                    estado.inventarios_clientes[id_destino][idp] += int(cantidad*beta)  
                                 # Se elimina la planificación del vehiculo
                                 estado.planificacion[idv] = {}
 
@@ -144,6 +147,12 @@ class Proceso:
                     costos_de_demanda_insatisfecha += demanda_insatisfecha * cliente.costos_penalizacion[idp]
                     costos_de_almacenamiento += exceso_inventario * cliente.costos_inventario[idp]                    
                     inventarios_cliente[idp] = max(0, inventario - demanda)
+
+
+                # si el inventario del clientes está bajo el umbral se genera un estado
+                #inventario_utilizado_cliente = sum(estado.inventarios_clientes[idc][idp] * self.instancia.productos[idp].peso for idp in self.instancia.id_productos)
+                #if estado.inventarios_clientes[idc][idp] < self.instancia.umbral_inventario_clientes:
+                    #Es_estado = True
 
             # Si el tiempo es mayor al horizonte de tiempo, se termina el ciclo y se redirigen todos al depot
             if estado.tiempo >= self.instancia.horizonte_tiempo:
@@ -163,11 +172,15 @@ class Proceso:
             posicion_anterior = estado_original.posiciones_vehiculos[idv]
             posicion_nueva = estado.posiciones_vehiculos[idv]
             # calculamos el costo de traslado de los vehiculos de el estado actual al nuevo estado
-            costos_de_traslado += np.linalg.norm(np.array([posicion_anterior['x'], posicion_anterior['y']]) - np.array([posicion_nueva['x'], posicion_nueva['y']]))
+            costos_de_traslado += np.linalg.norm(np.array([posicion_anterior['x'], posicion_anterior['y']]) - np.array([posicion_nueva['x'], posicion_nueva['y']])) #distancia_euclidiana( punto1 = np.array([posicion_anterior['x'], posicion_anterior['y']]), punto2 = np.array([posicion_nueva['x'], posicion_nueva['y']]))
+
 
         # Calculamos la recompensa de la transición
         recompensa = costos_de_traslado + costos_de_demanda_insatisfecha + costos_de_almacenamiento
+
         return estado, recompensa, costos_de_traslado, costos_de_demanda_insatisfecha
+
+
 
     def determinar_c_st_at(self, estado_original, accion):
         '''método que determina el costo fijo de tomar ese estado acción. Es dado por la planificación post estado
@@ -176,7 +189,7 @@ class Proceso:
             * accion: Dict que tiene la acción tomada
         Returna:
             * costo: costo fijo de la planificación post estado '''
-        estado = copy.copy(estado_original) # creamos una copia para que no afecte a la referencia del estado original
+        estado = copy.deepcopy(estado_original) # creamos una copia para que no afecte a la referencia del estado original
         self.actualizar_planificacion(estado, accion) # actualizamos la planificación
         costo = 0
         # obtenemos los costos de traslado hasta que lleguen al cliente cada vehículo {1: {2: {1:20,2:10} }, 2: {6 : {1:10,2:20}}} key= id_vehiculo, value =plani(dict), plani.key = id_cliente
@@ -197,7 +210,6 @@ class Proceso:
                     #costo += np.linalg.norm(np.array([posicion_actual_x, posicion_actual_y]) - np.array([self.instancia.clientes[id_cliente].posicion_x, self.instancia.clientes[id_cliente].posicion_y])) #distancia_euclidiana( punto1 = np.array([posicion_anterior['x'], posicion_anterior['y']]), punto2 = np.array([posicion_nueva['x'], posicion_nueva['y']]))
 
             return costo
-
 
 
 #NO SE USA DE MOMENTO

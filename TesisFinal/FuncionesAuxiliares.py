@@ -238,3 +238,38 @@ def entregar_planificacion_segun_demanda(planificacion, capacidad, demandas, pro
             break  # No hay más capacidad disponible
     
     return allocated
+
+
+
+
+# optimizado
+def fourier_transform_features_vectorized( features, max_i=5):
+    """
+        Recibe un array de features (sin intercepto) y devuelve un array
+    con las transformaciones de Fourier vectorizadas: 
+    cos(i * x) y sin(i * x) para i = 1..max_i.
+        
+    Args:
+        features: np.array, shape (n_features,)
+        max_i: int, máximo valor de i en la transformación
+        
+    Return:
+        np.array, shape (n_features * 2 * max_i,)
+    """
+    # Crear array de índices i = [1, 2, ..., max_i]
+    i_vals = np.arange(1, max_i + 1).reshape(-1, 1)  # shape (max_i, 1)
+
+    # Expandir cada feature: shape (max_i, n_features)
+    # Cada columna corresponde a i * feature_j
+    x_expanded = i_vals * features.reshape(1, -1)
+
+    # Calcular coseno y seno en forma vectorizada
+    cos_vals = np.cos(x_expanded)  # shape (max_i, n_features)
+    sin_vals = np.sin(x_expanded)  # shape (max_i, n_features)
+
+    # Intercalamos cos y sin para cada i, por cada feature
+    # Primero aplanamos en columna
+    combined = np.vstack([cos_vals, sin_vals]).reshape(-1, order='F')
+
+    return combined
+    
