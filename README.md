@@ -1,6 +1,6 @@
-# Proyecto AConC: Optimización de Enrutamiento y Control de Inventarios
+# Proyecto SDMMIRP
 
-Este proyecto aborda un problema dinámico de **Enrutamiento de Vehículos y Control de Inventarios (IRP - Inventory Routing Problem)**. Su objetivo es tomar decisiones secuenciales en el tiempo sobre qué clientes visitar y cuánto producto entregar para minimizar una función de costos compuesta por:
+Este proyecto aborda un problema dinámico de **SDMM-Inventory Routing Problem**. Su objetivo es tomar decisiones secuenciales en el tiempo sobre qué clientes visitar y cuánto producto entregar para minimizar una función de costos compuesta por:
 1. **Costos de Traslado**: Distancia recorrida por los vehículos.
 2. **Costos de Almacenamiento**: Mantención de inventario en los clientes.
 3. **Costos de Demanda Insatisfecha**: Penalización por quiebres de stock.
@@ -12,14 +12,7 @@ Para lograr esto, el proyecto emplea una variedad de enfoques, desde heurística
 ## 📂 Estructura del Proyecto
 
 ```text
-AConC/
-├── RunMC.py            # Ejecución del agente Monte Carlo tradicional
-├── RunMCF.py           # Ejecución del agente Monte Carlo con Expansión de Fourier
-├── RunMCFH.py          # Ejecución del agente Monte Carlo Fourier enfocado en Almacenamiento
-├── RunMCNN.py          # Ejecución del agente Monte Carlo con Redes Neuronales
-├── RunNN.py            # Ejecución del agente Q-Learning con Redes Neuronales Profundas
-├── RunROC.py           # Ejecución de la política de Rollout con Clústeres (K-Means)
-├── run_clusterh.slurm  # Script para ejecución en paralelo en clústeres HPC (SLURM)
+
 ├── src/                # Código fuente principal
 │   ├── Proceso.py
 │   ├── Instancia.py
@@ -36,22 +29,6 @@ AConC/
 └── Resultados_*/       # (Generado automáticamente) Resultados en Excel por modelo
 └── Graficos_*/         # (Generado automáticamente) Gráficos de entrenamiento
 ```
-
----
-
-## 🚀 Scripts de Ejecución Principal
-
-Los archivos `Run*.py` son los puntos de entrada para ejecutar simulaciones y entrenamientos en instancias específicas. Todos reciben la ruta de un archivo XML (la instancia) como argumento por consola.
-
-- **`RunMC.py`**: Ejecuta el entrenamiento de una política mediante el método de **Monte Carlo clásico** (`MonteCarlo`), guardando los costos históricos y el registro de convergencia en un archivo `.xlsx` y un gráfico `.png`.
-- **`RunMCF.py`**: Entrena un modelo **Monte Carlo con Características de Fourier** (`MonteCarlo_Fourier`), un método de aproximación de valor lineal que maneja espacios de estado continuos.
-- **`RunMCFH.py`**: Similar a MCF, pero utiliza una variante híbrida o con enfoque ajustado en almacenamiento (`MCFourierH`).
-- **`RunMCNN.py`**: Entrena un agente de **Monte Carlo con Redes Neuronales** (`MCNN`), que utiliza una red neuronal para aproximar la función de valor a partir de episodios completos.
-- **`RunNN.py`**: Ejecuta **Deep Q-Learning (QLNN)** utilizando redes neuronales para aproximar la función de valor $Q(s, a)$.
-- **`RunROC.py`**: Ejecuta simulaciones utilizando la política **RollOutCluster** (`RollOutCluster`), la cual no requiere entrenamiento previo, sino que toma decisiones en línea (Lookahead) basadas en múltiples trayectorias de simulación hacia adelante.
-
-### Ejecución en Clúster HPC
-- **`run_clusterh.slurm`**: Script configurado para lanzar trabajos paralelos (Job Arrays) en un entorno SLURM. Útil para correr decenas de instancias XML simultáneamente dividiendo la carga en nodos computacionales.
 
 ---
 
