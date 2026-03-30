@@ -102,21 +102,5 @@ Esta sección cubre los algoritmos más complejos que utilizan aproximación de 
     - `kmeans_clustering_sklearn`: Segmentación geográfica de clientes en sub-zonas (clústeres).
     - `fourier_transform_features_vectorized`: Transformaciones de bases no lineales (seno/coseno) utilizadas por los algoritmos de aproximación de valor (MCF).
 
----
-
-## ⚙️ Uso y Ejecución Local
-
-Para correr cualquiera de los experimentos localmente, asegúrate de tener instaladas las dependencias matemáticas estándar (`pandas`, `numpy`, `matplotlib`, `scikit-learn`, `openpyxl`).
-
-Ejecuta el script deseado pasándole la ruta al archivo de la instancia como primer argumento de la línea de comandos:
-
-```bash
-# Ejecutar Q-Learning con Redes Neuronales
-python RunNN.py "rutas/hacia/tus/instancias/instancia_C1M1P1_01.xml"
-
-# Ejecutar Política de Rollout
-python RunROC.py "rutas/hacia/tus/instancias/instancia_C1M1P1_01.xml"
-```
-
 **Resultados generados:**
 Tras la ejecución, el script creará automáticamente dos carpetas (`Resultados_{Modelo}` y `Graficos_{Modelo}`). Dentro encontrarás un archivo Excel consolidando métricas (Tiempos, Costos y % de cada penalización) y un gráfico de convergencia si aplica.
