@@ -1,4 +1,4 @@
-# SDMMIRP
+# Proyecto AConC: Optimización de Enrutamiento y Control de Inventarios
 
 Este proyecto aborda un problema dinámico de **Enrutamiento de Vehículos y Control de Inventarios (IRP - Inventory Routing Problem)**. Su objetivo es tomar decisiones secuenciales en el tiempo sobre qué clientes visitar y cuánto producto entregar para minimizar una función de costos compuesta por:
 1. **Costos de Traslado**: Distancia recorrida por los vehículos.
@@ -16,6 +16,7 @@ AConC/
 ├── RunMC.py            # Ejecución del agente Monte Carlo tradicional
 ├── RunMCF.py           # Ejecución del agente Monte Carlo con Expansión de Fourier
 ├── RunMCFH.py          # Ejecución del agente Monte Carlo Fourier enfocado en Almacenamiento
+├── RunMCNN.py          # Ejecución del agente Monte Carlo con Redes Neuronales
 ├── RunNN.py            # Ejecución del agente Q-Learning con Redes Neuronales Profundas
 ├── RunROC.py           # Ejecución de la política de Rollout con Clústeres (K-Means)
 ├── run_clusterh.slurm  # Script para ejecución en paralelo en clústeres HPC (SLURM)
@@ -29,6 +30,7 @@ AConC/
 │       ├── simples.py
 │       ├── rollout.py
 │       ├── modelos_avanzados.py
+│       ├── MCNN.py
 │       ├── QLNN.py
 │       └── MCFAlmacenamiento.py
 └── Resultados_*/       # (Generado automáticamente) Resultados en Excel por modelo
@@ -44,6 +46,7 @@ Los archivos `Run*.py` son los puntos de entrada para ejecutar simulaciones y en
 - **`RunMC.py`**: Ejecuta el entrenamiento de una política mediante el método de **Monte Carlo clásico** (`MonteCarlo`), guardando los costos históricos y el registro de convergencia en un archivo `.xlsx` y un gráfico `.png`.
 - **`RunMCF.py`**: Entrena un modelo **Monte Carlo con Características de Fourier** (`MonteCarlo_Fourier`), un método de aproximación de valor lineal que maneja espacios de estado continuos.
 - **`RunMCFH.py`**: Similar a MCF, pero utiliza una variante híbrida o con enfoque ajustado en almacenamiento (`MCFourierH`).
+- **`RunMCNN.py`**: Entrena un agente de **Monte Carlo con Redes Neuronales** (`MCNN`), que utiliza una red neuronal para aproximar la función de valor a partir de episodios completos.
 - **`RunNN.py`**: Ejecuta **Deep Q-Learning (QLNN)** utilizando redes neuronales para aproximar la función de valor $Q(s, a)$.
 - **`RunROC.py`**: Ejecuta simulaciones utilizando la política **RollOutCluster** (`RollOutCluster`), la cual no requiere entrenamiento previo, sino que toma decisiones en línea (Lookahead) basadas en múltiples trayectorias de simulación hacia adelante.
 
@@ -73,7 +76,7 @@ El diseño del código sigue un esquema de Simulación de Procesos de Decisión 
     4. Calcula las recompensas paso a paso (Costos de traslado + almacenamiento + escasez).
     5. Detiene la simulación temporal cuando se necesita que el agente tome una nueva decisión (ej. un vehículo se queda sin ruta, el inventario cae bajo un umbral o transcurre un horizonte fijo).
 
-### 2. Políticas de Decisión (`src/politicas/`)
+### 2. Políticas de referencia (`src/politicas/`)
 
 Las políticas son responsables de tomar un objeto `Estado` y devolver una acción (`Dict`).
 
@@ -90,7 +93,31 @@ Las políticas son responsables de tomar un objeto `Estado` y devolver una acci�
 *   **`rollout.py`** *(Clases `RollOutSimple`, `RollOutCluster`)*:
     Algoritmos de mejora de políticas (Lookahead). Evalúan todas las acciones "factibles" en el estado actual, realizando $N$ simulaciones completas (trayectorias) hacia el futuro utilizando una política simple (heurística) como política base. Luego, eligen la acción que entregó el costo promedio esperado más bajo.
 
-### 3. Herramientas Auxiliares
+### 3. Modelos Avanzados de Aprendizaje por Refuerzo
+
+Esta sección cubre los algoritmos más complejos que utilizan aproximación de funciones para resolver el problema.
+
+*   **`modelos_avanzados.py`** *(Clases `MonteCarlo`, `MonteCarlo_Fourier`)*:
+    *   **`MonteCarlo` (MC)**: Implementa el algoritmo clásico *On-Policy Monte Carlo Control*. Aprende el valor de los pares estado-acción promediando los retornos (costos totales) obtenidos al final de episodios completos. Utiliza una política $\epsilon$-greedy para el balance entre exploración y explotación, y almacena la función de valor en una tabla (diccionario).
+    *   **`MonteCarlo_Fourier` (MCF)**: Es una extensión que utiliza **aproximación de funciones** con una combinación lineal de **bases de Fourier**. Esto le permite encontrar relaciones No Lineales entre los features. El algoritmo aprende los pesos (coeficientes `betas`) de estas funciones base para aproximar la función de valor.
+
+*   **`MCNN.py`** *(Clase `MCNN`)*:
+    *   Implementa un algoritmo de **Monte Carlo Profundo con Redes Neuronales**. Al igual que el método Monte Carlo clásico, espera a que un episodio termine para actualizar su política.
+    *   Para cada par estado-acción $(s_t, a_t)$ visitado, calcula el **retorno completo** $G_t$ (la suma de todas las recompensas futuras hasta el final del episodio).
+    *   Utiliza una red neuronal que aprende a mapear las características de un estado-acción a su retorno $G_t$ correspondiente. A diferencia de Q-Learning, no utiliza bootstrapping (no estima el valor de un estado basándose en el valor de estados sucesores), lo que puede reducir el sesgo a costa de una mayor varianza.
+
+*   **`QLNN.py`** *(Clase `QLNN`)*:
+    *   Implementa el algoritmo **Deep Q-Learning**, un método *off-policy* de Diferencia Temporal (TD).
+    *   Utiliza una **Red Neuronal Profunda** para aproximar la función de valor-acción óptima, $Q^*(s, a)$.
+    *   Incorpora dos técnicas clave para estabilizar el entrenamiento:
+        1.  **Experience Replay**: Almacena las transiciones $(s, a, r, s')$ en un búfer de memoria y entrena la red con mini-lotes de muestras aleatorias. Esto rompe la correlación entre muestras consecutivas.
+        2.  **Target Network**: Usa una segunda red (red objetivo) para calcular los valores Q de los estados siguientes. Esta red se actualiza de forma más lenta, lo que proporciona un objetivo de entrenamiento más estable.
+    *   La red se entrena para minimizar el error entre el valor Q predicho y el "objetivo Q" calculado con la ecuación de Bellman.
+
+*   **`MCFAlmacenamiento.py`** *(Clase `MCFourierH`)*:
+    *   Corresponde a una variante especializada del modelo `MonteCarlo_Fourier`. La `H` hace referencia a que es el que se usa para las instancias de almacenamiento. Este modelo extiende el espacio de acciones que hay.
+
+### 4. Herramientas Auxiliares
 
 *   **`FuncionesAuxiliares.py`**:
     Un conjunto de métodos matemáticos altamente optimizados mediante NumPy:
