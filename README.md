@@ -1,4 +1,4 @@
-# Proyecto AConC: Optimización de Enrutamiento y Control de Inventarios
+# SDMMIRP
 
 Este proyecto aborda un problema dinámico de **Enrutamiento de Vehículos y Control de Inventarios (IRP - Inventory Routing Problem)**. Su objetivo es tomar decisiones secuenciales en el tiempo sobre qué clientes visitar y cuánto producto entregar para minimizar una función de costos compuesta por:
 1. **Costos de Traslado**: Distancia recorrida por los vehículos.
