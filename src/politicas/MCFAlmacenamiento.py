@@ -16,6 +16,7 @@ class MCFourierH(MonteCarlo_Fourier):
             A partir de un plan de entrega completo, genera combinaciones
             escalando las cantidades de manera INDEPENDIENTE por producto.
             Redondea las cantidades y elimina planes vacíos o duplicados.
+            NOTA: Es costoso computacionalmente
             
             Args:
                 * plan_completo (dict): {'id_producto': cantidad_total, ...}
