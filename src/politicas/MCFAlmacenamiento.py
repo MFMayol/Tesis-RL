@@ -1,11 +1,11 @@
-from .Fourier_1D import MonteCarlo_Fourier1D
+from .modelos_avazados import MonteCarlo_Fourier
 import numpy as np
 from src.Estado import Estado
 import math
 from typing import Dict, List, Set, Tuple, Any
 import itertools
 
-class MCFourierH(MonteCarlo_Fourier1D):
+class MCFourierH(MonteCarlo_Fourier):
     def __init__(self, instancia, proceso, episodios, epsilon, learning_rate, max_i):
         super().__init__(instancia, proceso, episodios, epsilon, learning_rate, max_i)
 
