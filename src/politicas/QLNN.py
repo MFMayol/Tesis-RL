@@ -277,8 +277,6 @@ class QLNN(Modelos_de_aproximacion):
                 self.actualizar_mejor_red()
                 print(f"Episodio: {episodio} ok, FO actual: {self.mejor_fo}")
 
-            if episodio % 20 == 0:
-                self.target_net.load_state_dict(self.net.state_dict())
 
         fin = time.time()
         self.tiempo_entrenamiento = round(fin - inicio)
@@ -369,9 +367,16 @@ class QLNN(Modelos_de_aproximacion):
         # Calculamos la pérdida. Las formas deben coincidir.
         # current_q_values.shape -> [batch_size, 1]
         # targets_tensor.unsqueeze(1).shape -> [batch_size, 1]
+        # Calculamos la pérdida. Las formas deben coincidir.
+        # current_q_values.shape -> [batch_size, 1]
+        # targets_tensor.unsqueeze(1).shape -> [batch_size, 1]
         loss = self.loss_fn(current_q_values, targets_tensor.unsqueeze(1))
 
         # Realizamos la retropropagación para actualizar los pesos de self.net.
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # Soft update de la red objetivo del paper DDPG
+        for target_param, local_param in zip(self.target_net.parameters(), self.net.parameters()):
+            target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
