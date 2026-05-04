@@ -267,14 +267,20 @@ class Instancia:
                 demandas.append(cliente.demanda_media[id]) 
             self.demandas_medias[id] = sum(demandas) / len(demandas)
 
+        if not self.productos:
+            return
+            
+        id_base = list(self.productos.keys())[0]
+        demanda_base = self.demandas_medias[id_base]
+        if demanda_base == 0:
+            demanda_base = 1e-5  # Prevenir división por cero si la demanda es nula
+
         # Ahora implementamos la política de inventario inicial considerndo la demanda promedio de cada producto y las capacidades de los vehiculos según lo conversado con el profesor
-        for idp,producto in self.productos.items():
-            for idv,vehiculo in self.vehiculos.items():
-                if idp == 1:
-                    numerador = vehiculo.capacidad
-                    demanda_idp = self.demandas_medias[idp] if self.demandas_medias[idp] > 0 else 0.001
-                    denominador = sum((self.demandas_medias[j] / demanda_idp) * self.productos[j].peso for j in self.productos.keys())
-                    vehiculo.inventario[idp] = int(numerador / max(denominador, 0.001))
-                else: 
-                    demanda_1 = self.demandas_medias[1] if self.demandas_medias[1] > 0 else 0.001
-                    vehiculo.inventario[idp] = int( (vehiculo.inventario[1] / demanda_1) * self.demandas_medias[idp])
+        for idv, vehiculo in self.vehiculos.items():
+            numerador = vehiculo.capacidad
+            denominador = sum((self.demandas_medias[j] / demanda_base) * self.productos[j].peso for j in self.productos.keys())
+            vehiculo.inventario[id_base] = int(numerador / denominador)
+            
+            for idp in self.productos.keys():
+                if idp != id_base:
+                    vehiculo.inventario[idp] = int((vehiculo.inventario[id_base] / demanda_base) * self.demandas_medias[idp])

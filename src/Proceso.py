@@ -129,14 +129,17 @@ class Proceso:
                                     # Actualizamos los inventarios de los clientes acorde a lo que efectivamente le pudo llegar
                                     estado.inventarios_clientes[id_destino][idp] += cantidad
                             else:
-                                peso_entrega_seguro = max(peso_entrega, 1e-6)
-                                beta = (cliente_destino.capacidad_almacenamiento - inventario_utilizado_cliente) / peso_entrega_seguro 
+                                if peso_entrega > 0:
+                                    espacio_disponible = max(0, cliente_destino.capacidad_almacenamiento - inventario_utilizado_cliente)
+                                    beta = espacio_disponible / peso_entrega 
+                                else:
+                                    beta = 0
                                 for idp, cantidad in estado.planificacion[idv][id_destino].items():
                                     cant_entregar = int(cantidad * beta)
                                     estado.inventarios_vehiculos[idv][idp] -= cant_entregar
                                     estado.inventarios_clientes[id_destino][idp] += cant_entregar
-                                # Se elimina la planificación del vehiculo
-                                estado.planificacion[idv] = {}
+                            # Se elimina la planificación del vehiculo de cualquier forma
+                            estado.planificacion[idv] = {}
 
             # Ahora ocurre la demanda y se determinan los costos de inventario/demanda insatisfecha para cada cliente
             for idc in self.instancia.id_clientes:
